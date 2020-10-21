@@ -1,0 +1,13 @@
+image:
+  file: .devcontainer/Dockerfile
+tasks:
+  - init: mix do local.hex --force, local.rebar --force
+github:
+  prebuilds:
+    master: true
+    branches: true
+    pullRequests: true
+    addCheck: true
+    addComment: true
+vscode:
+  extensions:

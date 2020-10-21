@@ -1,0 +1,22 @@
+name: test
+on: push
+jobs:
+  test:
+    env:
+      MIX_ENV: test
+    runs-on: ubuntu-latest
+    name: Test Erlang/OTP ${{ matrix.otp }} & Elixir ${{ matrix.elixir }}
+    strategy:
+      matrix:
+        # see https://hexdocs.pm/elixir/compatibility-and-deprecations.html
+        otp: [21.3, 22.3, 23.1]
+        elixir: [1.10.4]
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-elixir@v1
+        with:
+          otp-version: ${{ matrix.otp }}
+          elixir-version: ${{ matrix.elixir }}
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+      - run: mix test

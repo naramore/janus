@@ -1,0 +1,10 @@
+{
+  "recommendations": [
+    "vscode-icons-team.vscode-icons",
+    "jakebecker.elixir-ls",
+    "vsls-contrib.codetour",
+    "eamodio.gitlens",
+    "ms-vsliveshare.vsliveshare",
+    "ms-vsliveshare.vsliveshare-pack"
+  ]
+}

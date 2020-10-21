@@ -1,0 +1,46 @@
+name: static analyses
+on: push
+env:
+  MIX_ENV: test
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-elixir@v1
+        with:
+          otp-version: 23.1
+          elixir-version: 1.10.4
+      - uses: actions/cache@v2
+        with:
+          path: |
+            _build
+            deps
+          key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
+      - run: mix deps.get
+      - run: mix compile --warnings-as-errors
+  codecov:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: mix coveralls.json
+      # - uses: codecov/codecov-action@v1
+      #   with:
+      #     token: ${{ secrets.CODECOV_TOKEN }}
+      #     file: ./cover/excoveralls.json
+  credo:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: mix credo
+  format:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: mix format --check-formatted
+  dialyzer:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - run: mix dialyzer
+        

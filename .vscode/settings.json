@@ -1,0 +1,16 @@
+{
+    "workbench.iconTheme": "vscode-icons",
+    "editor.insertSpaces": true,
+    "editor.tabSize": 2,
+    "editor.formatOnType": true,
+    "editor.wordBasedSuggestions": false,
+    "editor.trimAutoWhitespace": false,
+    "editor.acceptSuggestionOnEnter": "off",
+    "search.exclude": {
+        "_build/**": true,
+        ".elixir_ls/**": true,
+        "deps/**": true
+    },
+    "elixirLS.dialyzerFormat": "dialyxir_long",
+    "elixirLS.suggestSpecs": false
+}
