@@ -35,14 +35,14 @@ defmodule Janus.Graph do
   @type ast_type ::
           :pre_walk
           | :ident
-          | :params
+          | {:pre_walk | :post_walk, :params}
           | {:pre_subquery | :post_subquery, Resolver.id()}
           | {:recursion, depth :: timeout}
           | {:post_walk, reachability}
   @type attr_type :: :pre_walk | :cyclic | {:post_walk, reachability}
 
   @callback ast_walker(ast_type, EQL.AST.t(), t, acc) ::
-              {:ok, {t, acc}} | {:error, reason :: term}
+              {:cont | :skip, t, acc} | {:error, reason :: term}
   @callback attr_walker(attr_type, edge, t, acc) :: {reachability, t, acc}
 
   @impl Access
@@ -80,7 +80,7 @@ defmodule Janus.Graph do
   end
 
   @spec ast_walker(module, ast_type, EQL.AST.t(), t, acc) ::
-          {:ok, {t, acc}} | {:error, reason :: term}
+          {:cont | :skip, t, acc} | {:error, reason :: term}
   def ast_walker(module, type, ast, graph, acc) do
     module.ast_walker(type, ast, graph, acc)
   end
@@ -90,9 +90,22 @@ defmodule Janus.Graph do
     module.attr_walker(type, edge, graph, acc)
   end
 
+  @spec inputs(t, [Resolver.id()]) :: [Janus.attr()]
+  def inputs(graph, resolver_ids) do
+    graph.dg
+    |> :digraph.edges()
+    |> Enum.filter(fn
+      {_, _, _, %{id: id}} -> id in resolver_ids
+      _ -> false
+    end)
+    |> Enum.dedup_by(fn {_, _, _, %{id: id}} -> id end)
+    |> Enum.map(&elem(&1, 1))
+    |> Enum.dedup()
+  end
+
   @spec output(t, Resolver.id(), [Janus.attr()]) :: Janus.shape_descriptor()
   def output(graph, resolver_id, subquery_path \\ []) do
-    # TODO: unions (at the moment, this 'flattens' all unions at their respective logical depth)
+    # NOTE: at the moment, this 'flattens' all unions at their respective logical depth
     graph.dg
     |> :digraph.edges()
     |> Enum.filter(&match?({_, _, _, %{id: ^resolver_id}}, &1))
@@ -111,25 +124,31 @@ defmodule Janus.Graph do
 
   @spec walk_ast(t, EQL.AST.t(), acc, module) :: {:ok, {t, acc}} | {:error, reason :: term}
   def walk_ast(graph, %Prop{} = prop, acc, module) do
-    with {:ok, {graph, acc}} <- ast_walker(module, :pre_walk, prop, graph, acc),
-         {r, g, a} <- walk_attr(graph, EQL.get_key(prop), acc, module) do
-      ast_walker(module, {:post_walk, r}, prop, g, a)
+    with {:cont, graph, acc} <- ast_walker(module, :pre_walk, prop, graph, acc),
+         {r, g, a} <- walk_attr(graph, EQL.get_key(prop), acc, module),
+         {_, g, a} <- ast_walker(module, {:post_walk, r}, prop, g, a) do
+      {:ok, {g, a}}
     else
+      {:skip, graph, acc} -> {:ok, {graph, acc}}
       {:error, reason} -> {:error, reason}
     end
   end
 
   def walk_ast(graph, %Ident{} = ident, acc, module) do
-    ast_walker(module, :ident, ident, acc, graph)
+    case ast_walker(module, :ident, ident, acc, graph) do
+      {:error, reason} -> {:error, reason}
+      {_, graph, acc} -> {:ok, {graph, acc}}
+    end
   end
 
   def walk_ast(graph, %Params{expr: expr} = params, acc, module) do
-    case ast_walker(module, :params, params, graph, acc) do
-      {:ok, {graph, acc}} ->
-        walk_ast(graph, expr, acc, module)
-
-      {:error, reason} ->
-        {:error, reason}
+    with {:cont, graph, acc} <- ast_walker(module, {:pre_walk, :params}, params, graph, acc),
+         {:ok, {graph, acc}} <- walk_ast(graph, expr, acc, module),
+         {_, graph, acc} <- ast_walker(module, {:post_walk, :params}, params, graph, acc) do
+      {:ok, {graph, acc}}
+    else
+      {:skip, graph, acc} -> {:ok, {graph, acc}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -141,16 +160,18 @@ defmodule Janus.Graph do
       {:ok, {graph, acc}} ->
         graph
         |> subqueries(key)
-        |> Enum.reduce({:ok, {graph, acc}}, fn
+        |> Enum.reduce_while({:ok, {graph, acc}}, fn
           _, {:error, reason} ->
-            {:error, reason}
+            {:halt, {:error, reason}}
 
           r, {:ok, {g, a}} ->
-            with {:ok, {g, a}} <- ast_walker(module, {:pre_subquery, r}, join, g, a),
-                 {:ok, {g, a}} <- walk_ast(g, q, a, module) do
-              ast_walker(module, {:post_subquery, r}, join, g, a)
+            with {:cont, g, a} <- ast_walker(module, {:pre_subquery, r}, join, g, a),
+                 {:ok, {g, a}} <- walk_ast(g, q, a, module),
+                 {_, g, a} <- ast_walker(module, {:post_subquery, r}, join, g, a) do
+              {:cont, {:ok, {g, a}}}
             else
-              {:error, reason} -> {:error, reason}
+              {:skip, graph, acc} -> {:cont, {:ok, {graph, acc}}}
+              {:error, reason} -> {:halt, {:error, reason}}
             end
         end)
     end
@@ -158,17 +179,17 @@ defmodule Janus.Graph do
 
   def walk_ast(graph, %Join{key: key} = join, acc, module)
       when is_integer(key) or key == :infinity do
-    case walk_ast(graph, key, acc, module) do
-      {:error, reason} ->
-        {:error, reason}
-
-      {:ok, {graph, acc}} ->
-        ast_walker(module, {:recursion, key}, join, graph, acc)
+    with {:ok, {graph, acc}} <- walk_ast(graph, key, acc, module),
+         {:cont, graph, acc} <- ast_walker(module, {:recursion, key}, join, graph, acc) do
+      {:ok, {graph, acc}}
+    else
+      {:skip, graph, acc} -> {:ok, {graph, acc}}
+      {:error, reason} -> {:error, reason}
     end
   end
 
   def walk_ast(graph, %Union{} = union, acc, module) do
-    walk_ast(graph, Union.to_query(union), acc, module)
+    walk_ast(graph, EQL.union_to_query(union), acc, module)
   end
 
   def walk_ast(graph, %Query{children: children}, acc, module) do

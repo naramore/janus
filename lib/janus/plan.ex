@@ -2,7 +2,7 @@ defmodule Janus.Plan do
   @moduledoc false
 
   alias Digraph.{Edge, Vertex}
-  alias Janus.{Resolver, Utils}
+  alias Janus.{Graph, Resolver, Utils}
   require Logger
 
   @type t :: Digraph.t()
@@ -15,22 +15,22 @@ defmodule Janus.Plan do
           required(:attrs) => [Janus.attr()],
           required(:type) => type,
           optional(:resolver) => Resolver.id(),
-          # optional(:requires) => Janus.shape_descriptor,
-          optional(:params) => map
+          optional(:params) => map,
+          optional(:input) => [Janus.attr()]
         }
 
   @root_start [:root | :start]
   @root_end [:root | :end]
 
-  @spec init_graph(Digraph.t()) :: Digraph.t()
+  @spec init_graph(t) :: t
   def init_graph(graph) do
     {_, graph} = create_node(graph, :and, [], [], id: @root_start)
     {_, graph} = create_node(graph, :join, [], [], id: @root_end)
     graph
   end
 
-  @spec create_attr_root_node(Digraph.t(), Janus.attr()) ::
-          {:ok, {Vertex.id(), Digraph.t()}} | {:error, reason :: term}
+  @spec create_attr_root_node(t, Janus.attr()) ::
+          {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   def create_attr_root_node(graph, attr) do
     case lookup(graph, :or, [], attr) do
       nil ->
@@ -46,40 +46,28 @@ defmodule Janus.Plan do
     end
   end
 
-  @spec pre_process_path(path) :: [{landmark, scope}]
-  def pre_process_path(path) do
-    {top_ands, new_path} =
-      path
-      |> :lists.reverse()
-      |> Enum.reduce({[], []}, fn
-        {:and, bs, b}, {t, []} ->
-          {[{{:and, bs, b}, [{:and, bs}]} | t], [{{:join, bs}, [b, {:and, bs}]}]}
+  @spec required_of(t, Vertex.t() | Vertex.id()) :: Janus.shape_descriptor()
+  def required_of(graph, %Vertex{id: id}) do
+    required_of(graph, id)
+  end
 
-        {:and, bs, b}, {t, [{_, s} | _] = p} ->
-          {[{{:and, bs, b}, [{:and, bs} | s]} | t], [{{:join, bs}, [b, {:and, bs} | s]} | p]}
-
-        id, {t, []} ->
-          {t, [{id, []}]}
-
-        id, {t, [{_, s} | _] = p} ->
-          {t, [{id, s} | p]}
-      end)
-
-    top_ands
-    |> :lists.reverse(new_path)
-    |> Enum.map(fn
-      {{:join, _} = j, [_ | s]} -> {j, s}
-      x -> x
-    end)
+  def required_of(graph, id) do
+    # TODO: recursively traverse until finding one or more resolver nodes
+    graph
+    |> Digraph.out_neighbours(id)
+    |> get_in([Access.all(), :label, :input])
+    |> Enum.reject(&is_nil/1)
+    |> Enum.concat()
+    |> Utils.to_shape_descriptor()
   end
 
   @spec follow(
-          Digraph.t(),
+          t,
           Vertex.t() | Vertex.id() | nil,
-          [{landmark, scope}],
+          [{landmark, Graph.node_id(), scope}],
           Janus.attr(),
           keyword
-        ) :: {:ok, Digraph.t()} | {:error, reason :: term}
+        ) :: {:ok, t} | {:error, reason :: term}
   def follow(graph, current, path, attr, opts \\ [])
 
   def follow(graph, nil, path, attr, opts) do
@@ -116,26 +104,26 @@ defmodule Janus.Plan do
   end
 
   @spec follow_impl(
-          Digraph.t(),
+          t,
           Vertex.t(),
           [Vertex.t()] | Vertex.t() | nil,
-          [{landmark, scope}],
+          [{landmark, Graph.node_id(), scope}],
           Janus.attr(),
           keyword
         ) ::
-          {:ok, Digraph.t()} | {:error, reason :: term}
+          {:ok, t} | {:error, reason :: term}
   defp follow_impl(graph, current, [], path, attr, opts) do
     follow_impl(graph, current, nil, path, attr, opts)
   end
 
-  defp follow_impl(graph, current, nil, [{l, s} | t], attr, opts) do
+  defp follow_impl(graph, current, nil, [{l, i, s} | t], attr, opts) do
     graph
-    |> locate_and_connect(current.id, l, s, attr, opts)
+    |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
     |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp follow_impl(graph, current, next, [{l, s} | t] = p, attr, opts) do
+  defp follow_impl(graph, current, next, [{l, i, s} | t] = p, attr, opts) do
     if match_path_next?(next, l) do
       follow(graph, next, t, attr, opts)
     else
@@ -143,14 +131,16 @@ defmodule Janus.Plan do
         {_, %{label: %{resolver: _}}} ->
           graph
           |> inject_or_node(current, next)
-          |> Rails.bind(fn {oid, g} -> locate_and_connect(g, oid, l, s, attr, opts) end)
+          |> Rails.bind(fn {oid, g} ->
+            locate_and_connect(g, oid, l, s, attr, Keyword.put(opts, :input, i))
+          end)
           |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
         {%{label: %{type: :and}}, branches} ->
           case Enum.find(branches, &match?({%{label: %{scope: [b | _]}}, [b | _]}, {&1, s})) do
             nil ->
               graph
-              |> locate_and_connect(current.id, l, s, attr, opts)
+              |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
               |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
             branch ->
@@ -167,7 +157,7 @@ defmodule Janus.Plan do
           case Enum.find(branches, &match_path_next?(&1, l)) do
             nil ->
               graph
-              |> locate_and_connect(current.id, l, s, attr, opts)
+              |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
               |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
             branch ->
@@ -191,8 +181,7 @@ defmodule Janus.Plan do
     end
   end
 
-  # TODO: filter out all out_neighbours w/o the current attr
-  @spec next(Digraph.t(), Vertex.t(), Janus.attr()) :: [Vertex.t()] | Vertex.t() | nil
+  @spec next(t, Vertex.t(), Janus.attr()) :: [Vertex.t()] | Vertex.t() | nil
   defp next(graph, %{label: %{type: type}} = current, attr) do
     graph
     |> Digraph.out_neighbours(current.id)
@@ -200,14 +189,14 @@ defmodule Janus.Plan do
     |> Utils.cond_pipe(type in [:resolver, :join], &List.first/1)
   end
 
-  @spec inject_or_node(Digraph.t(), Vertex.t(), Vertex.t()) ::
-          {:ok, {Vertex.id(), Digraph.t()}} | {:error, reason :: term}
+  @spec inject_or_node(t, Vertex.t(), Vertex.t()) ::
+          {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   defp inject_or_node(graph, current, next) do
     inject_or_node(graph, current, next, current.label.scope)
   end
 
-  @spec inject_or_node(Digraph.t(), Vertex.t(), Vertex.t(), scope) ::
-          {:ok, {Vertex.id(), Digraph.t()}} | {:error, reason :: term}
+  @spec inject_or_node(t, Vertex.t(), Vertex.t(), scope) ::
+          {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   defp inject_or_node(graph, %{label: %{attrs: [attr]}} = current, next, scope) do
     inject_node(graph, current, next, &create_node(&1, :or, scope, attr))
   end
@@ -217,11 +206,11 @@ defmodule Janus.Plan do
   end
 
   @spec inject_node(
-          Digraph.t(),
+          t,
           Vertex.t(),
           Vertex.t(),
-          (Digraph.t() -> {Vertex.id(), Digraph.t()})
-        ) :: {:ok, {Vertex.id(), Digraph.t()}} | {:error, reason :: term}
+          (t -> {Vertex.id(), t})
+        ) :: {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   defp inject_node(graph, current, next, fun) do
     with %{id: id, label: label} <-
            Enum.find(Digraph.out_edges(graph, current.id), &(&1.v2 == next.id)),
@@ -235,13 +224,13 @@ defmodule Janus.Plan do
   end
 
   @spec locate_and_connect(
-          Digraph.t(),
+          t,
           Vertex.id(),
           landmark,
           scope,
           [Janus.attr()] | Janus.attr(),
           keyword
-        ) :: {:ok, {Vertex.id(), Digraph.t()}} | {:error, reason :: term}
+        ) :: {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   defp locate_and_connect(graph, previous_id, landmark, scope, attr, opts) do
     with {next_id, graph} <- find_or_create(graph, landmark, scope, attr, opts),
          {:ok, {_, graph}} <- connect(graph, previous_id, next_id, attr) do
@@ -251,8 +240,8 @@ defmodule Janus.Plan do
     end
   end
 
-  @spec connect(Digraph.t(), Vertex.id(), Vertex.id(), [Janus.attr()] | Janus.attr() | nil) ::
-          {:ok, {Edge.t(), Digraph.t()}} | {:error, reason :: term}
+  @spec connect(t, Vertex.id(), Vertex.id(), [Janus.attr()] | Janus.attr() | nil) ::
+          {:ok, {Edge.t(), t}} | {:error, reason :: term}
   defp connect(graph, v1, v2, attr) do
     graph
     |> Digraph.out_neighbours(v1)
@@ -263,8 +252,8 @@ defmodule Janus.Plan do
     end
   end
 
-  @spec find_or_create(Digraph.t(), landmark | :or, scope, [Janus.attr()] | Janus.attr(), keyword) ::
-          {Vertex.id(), Digraph.t()}
+  @spec find_or_create(t, landmark | :or, scope, [Janus.attr()] | Janus.attr(), keyword) ::
+          {Vertex.id(), t}
   defp find_or_create(graph, landmark, scope, attr, opts) do
     case lookup(graph, landmark, scope) do
       nil ->
@@ -273,11 +262,12 @@ defmodule Janus.Plan do
       id ->
         graph
         |> update_attrs(id, attr)
+        |> update_via_opts(id, opts)
         |> (&{id, &1}).()
     end
   end
 
-  @spec update_attrs(Digraph.t(), Vertex.id(), [Janus.attr()] | Janus.attr()) :: Digraph.t()
+  @spec update_attrs(t, Vertex.id(), [Janus.attr()] | Janus.attr()) :: t
   defp update_attrs(graph, id, attr) do
     update_in(graph, [:vertices, id, :label, :attrs], fn
       nil ->
@@ -292,7 +282,29 @@ defmodule Janus.Plan do
     end)
   end
 
-  @spec lookup(Digraph.t(), landmark | :or, scope, [Janus.attr()] | Janus.attr() | nil) ::
+  @spec update_via_opts(t, Vertex.t() | Vertex.id(), keyword) :: t
+  defp update_via_opts(graph, %Vertex{} = vertex, opts) do
+    if Keyword.has_key?(opts, :params) do
+      update_in(graph, [:vertices, vertex.id, :label, :params], fn
+        nil ->
+          Keyword.get(opts, :params)
+
+        params ->
+          Map.merge(params, Keyword.get(opts, :params), fn _, m1, m2 -> Map.merge(m1, m2) end)
+      end)
+    else
+      graph
+    end
+  end
+
+  defp update_via_opts(graph, id, opts) do
+    case Digraph.vertex(graph, id) do
+      nil -> graph
+      vertex -> update_via_opts(graph, vertex, opts)
+    end
+  end
+
+  @spec lookup(t, landmark | :or, scope, [Janus.attr()] | Janus.attr() | nil) ::
           Vertex.id() | nil
   defp lookup(graph, landmark, scope, attr \\ nil) do
     graph
@@ -329,12 +341,12 @@ defmodule Janus.Plan do
   defp attr_match?(_, _), do: false
 
   @spec create_node(
-          Digraph.t(),
+          t,
           landmark | :or | :and | :join,
           scope,
           [Janus.attr()] | Janus.attr(),
           keyword
-        ) :: {Vertex.id(), Digraph.t()}
+        ) :: {Vertex.id(), t}
   defp create_node(graph, landmark, scope, attr, opts \\ []) do
     label = create_node_label(landmark, scope, attr, opts)
 
@@ -352,12 +364,21 @@ defmodule Janus.Plan do
           keyword
         ) :: node_label
   defp create_node_label(landmark, scope, attr, opts) do
+    input =
+      case Keyword.get(opts, :input, []) do
+        i when is_list(i) -> i
+        i -> [i]
+      end
+
     %{
       scope: scope,
       attrs: if(is_list(attr), do: attr, else: [attr]),
       type: get_node_type(landmark)
     }
-    |> Utils.cond_pipe(&match?(%{type: :resolver}, &1), &Map.put(&1, :resolver, landmark))
+    |> Utils.cond_pipe(
+      &match?(%{type: :resolver}, &1),
+      &Map.merge(&1, %{resolver: landmark, input: input})
+    )
     |> Utils.cond_pipe(&add_params?(&1, opts), &Map.put(&1, :params, Keyword.get(opts, :params)))
   end
 

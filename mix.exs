@@ -88,9 +88,9 @@ defmodule Janus.MixProject do
     [
       check: [
         "compile --warnings-as-errors",
-        "format --check-formatted",
         "credo",
-        "dialyzer"
+        "dialyzer",
+        "format"
       ]
     ]
   end

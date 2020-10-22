@@ -21,6 +21,8 @@ defmodule EQL do
     AST.get_key(ast)
   end
 
+  defdelegate union_to_query(union), to: AST.Union, as: :to_query
+
   defdelegate query(children), to: AST.Query, as: :new
 
   defdelegate prop(module, key), to: AST.Prop, as: :new

@@ -8,7 +8,7 @@ defmodule JanusExamples do
 
     JanusExamples.complex_resolvers()
     |> Janus.Graph.new()
-    |> Graph.walk_attr(complex_attr(), %{planner | current_attr: complex_attr()}, Planner)
+    |> Graph.walk_attr(complex_attr(), Planner.reset(planner, complex_attr()), Planner)
   end
 
   def complex_source do

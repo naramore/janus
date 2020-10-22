@@ -1,6 +1,8 @@
 defmodule Janus.Planner do
   @moduledoc false
 
+  alias Digraph.Vertex
+  alias EQL.AST.{Ident, Join, Params, Prop}
   alias Janus.{Graph, Plan, Utils}
   require Logger
 
@@ -9,18 +11,21 @@ defmodule Janus.Planner do
 
   defstruct available_data: %{},
             resolver_trail: [],
-            # change to %{optional(Janus.attr) => Plan.path} ???
-            paths: [],
+            paths: %{},
             plan: nil,
-            current_attr: nil
+            current_attr: nil,
+            params: nil
 
   @type t :: %__MODULE__{
           available_data: Janus.shape_descriptor(),
-          resolver_trail: Plan.path(),
-          paths: [Plan.path()],
+          resolver_trail: [{Plan.landmark(), Graph.node_id()}],
+          paths: %{optional(Janus.attr()) => [{Plan.landmark(), Graph.node_id()}]},
           plan: Digraph.t(),
-          current_attr: Janus.attr() | nil
+          current_attr: Janus.attr() | nil,
+          params: map | nil
         }
+
+  @type graph :: %{optional(Vertex.t()) => graph}
 
   @impl Access
   def fetch(planner, key) do
@@ -37,21 +42,46 @@ defmodule Janus.Planner do
     Map.pop(planner, key)
   end
 
-  # :digraph.in_edges(graph.dg, EQL.get_key(key)) |> (( UNIQUE RESOLVERS )) |> Graph.output(graph, &1, [key | subquery_path]) |> Enum.map(&Map.keys/1)
-  # ^ that will be the available_data for each subquery
-
-  # :pre_walk, %Prop{}              -> set current_attr + reset trail
-  # {:post_walk, r}, %Prop{}        -> noop
-  # :ident, %Ident{}                -> add to (subquery?) available_data
-  # :params, %Params{}              -> store params
-  # {:recursion, depth}, %Join{}    -> ???
-  # {:pre_subquery, rid}, %Join{}   -> ???
-  # {:post_subquery, rid}, %Join{}  -> ???
-
-  # NOTE: need to update this struct to better support subqueries...
-
   @impl Graph
-  def ast_walker(_type, _ast, _graph, _acc) do
+  def ast_walker(:pre_walk, %Prop{} = _prop, _graph, _acc) do
+    # TODO: if existing source: backtrack plan + mark attr + connect + skip
+    #       otherwise: set current_attr + reset trail + cont
+    {:error, :not_implemented}
+  end
+
+  def ast_walker({:post_walk, :unreachable}, %Prop{} = prop, _graph, _acc) do
+    {:error, {:unreachable_prop, prop}}
+  end
+
+  def ast_walker({:post_walk, _}, %Prop{}, graph, acc) do
+    {:cont, graph, reset(acc)}
+  end
+
+  def ast_walker({:pre_walk, :params}, %Params{params: params}, graph, acc) do
+    {:cont, graph, %{acc | params: params}}
+  end
+
+  def ast_walker({:post_walk, :params}, %Params{}, graph, acc) do
+    {:cont, graph, %{acc | params: nil}}
+  end
+
+  def ast_walker(:ident, %Ident{}, _graph, _acc) do
+    # TODO: add to (subquery?) available_data?
+    {:error, :not_implemented}
+  end
+
+  def ast_walker({:pre_subquery, _rid}, %Join{}, _graph, _acc) do
+    # TODO: implement
+    {:error, :not_implemented}
+  end
+
+  def ast_walker({:post_subquery, _rid}, %Join{}, _graph, _acc) do
+    # TODO: implement
+    {:error, :not_implemented}
+  end
+
+  def ast_walker({:recursion, _depth}, %Join{}, _graph, _acc) do
+    # TODO: implement
     {:error, :not_implemented}
   end
 
@@ -66,9 +96,9 @@ defmodule Janus.Planner do
 
   def attr_walker(:pre_walk, {_, i, _, %{id: id}}, graph, planner) do
     if available?(planner, i) do
-      {:found, graph, add_path(planner, id)}
+      {:found, graph, add_path(planner, id, i)}
     else
-      {:reachable, graph, add_trail(planner, id)}
+      {:reachable, graph, add_trail(planner, id, i)}
     end
   end
 
@@ -84,6 +114,45 @@ defmodule Janus.Planner do
     }
   end
 
+  @spec reset(t, Janus.attr() | nil) :: t
+  def reset(plan, attr \\ nil)
+
+  def reset(plan, nil) do
+    %{plan | resolver_trail: [], current_attr: nil}
+  end
+
+  def reset(plan, attr) do
+    %{plan | resolver_trail: [], current_attr: attr}
+    |> update_in([:paths, attr], fn
+      nil -> []
+      x -> x
+    end)
+  end
+
+  @spec show(Digraph.t(), Vertex.t() | Vertex.id()) :: graph | nil
+  def show(graph, vertex_or_id \\ [:root | :start]) do
+    case show_impl(graph, vertex_or_id) do
+      {v, g} -> %{v => g}
+      _ -> nil
+    end
+  end
+
+  @spec show_impl(Digraph.t(), Vertex.t() | Vertex.id() | nil) :: {Vertex.t(), graph} | nil
+  defp show_impl(_graph, nil), do: nil
+
+  defp show_impl(graph, %Vertex{} = vertex) do
+    graph
+    |> Digraph.out_neighbours(vertex.id)
+    |> Enum.map(&show_impl(graph, &1))
+    |> Enum.reject(&is_nil/1)
+    |> Enum.into(%{})
+    |> (&{vertex, &1}).()
+  end
+
+  defp show_impl(graph, vertex_id) do
+    show_impl(graph, Digraph.vertex(graph, vertex_id))
+  end
+
   @spec available?(t, Graph.node_id()) :: boolean
   defp available?(_planner, []), do: true
 
@@ -95,20 +164,19 @@ defmodule Janus.Planner do
     input in Map.keys(planner.available_data)
   end
 
-  @spec add_trail(t, Plan.landmark()) :: t
-  defp add_trail(planner, id), do: Map.update!(planner, :resolver_trail, &[id | &1])
+  @spec add_trail(t, Plan.landmark(), Graph.node_id()) :: t
+  defp add_trail(planner, id, input) do
+    Map.update!(planner, :resolver_trail, &[{id, input} | &1])
+  end
 
   @spec tail_trail(t) :: t
   defp tail_trail(planner), do: Map.update!(planner, :resolver_trail, &tl/1)
 
-  @spec get_trail(t) :: Plan.path()
-  defp get_trail(%{resolver_trail: trail}), do: trail
-
-  @spec add_path(t, Plan.landmark()) :: t
-  defp add_path(planner, id) do
+  @spec add_path(t, Plan.landmark(), Graph.node_id(), keyword) :: t
+  defp add_path(planner, id, input, opts \\ []) do
     planner
-    |> Map.update!(:paths, &[[id | get_trail(planner)] | &1])
-    |> update_plan()
+    |> update_in([:paths, planner.current_attr], &[[{id, input} | planner.resolver_trail] | &1])
+    |> update_plan(update_opts(planner, opts))
     |> case do
       {:ok, planner} ->
         planner
@@ -118,14 +186,50 @@ defmodule Janus.Planner do
     end
   end
 
-  @spec update_plan(t) :: {:ok, t} | {:error, reason :: term}
-  defp update_plan(%{paths: [path | _], plan: graph, current_attr: attr} = planner) do
-    with {:ok, {origin_id, graph}} <- Plan.create_attr_root_node(graph, attr),
-         path = Plan.pre_process_path(path),
-         {:ok, graph} <- Plan.follow(graph, origin_id, path, attr) do
-      {:ok, %{planner | plan: graph}}
+  @spec update_opts(t, keyword) :: keyword
+  defp update_opts(%{params: nil}, opts), do: opts
+  defp update_opts(%{params: params}, opts), do: Keyword.put(opts, :params, params)
+
+  @spec update_plan(t, keyword) :: {:ok, t} | {:error, reason :: term}
+  defp update_plan(%{plan: plan, current_attr: attr} = planner, opts) do
+    with [path | _] <- get_in(planner, [:paths, attr]),
+         {:ok, {origin_id, plan}} <- Plan.create_attr_root_node(plan, attr),
+         path = pre_process_path(path),
+         {:ok, plan} <- Plan.follow(plan, origin_id, path, attr, opts) do
+      {:ok, %{planner | plan: plan}}
     else
       {:error, reason} -> {:error, reason}
     end
+  end
+
+  # NOTE: this 'path' is getting so complicated as is, I'm considering a struct...
+  @spec pre_process_path([{Plan.landmark(), Graph.node_id()}]) :: [
+          {Plan.landmark(), Graph.node_id(), Plan.scope()}
+        ]
+  defp pre_process_path(path) do
+    {top_ands, new_path} =
+      path
+      |> :lists.reverse()
+      |> Enum.reduce({[], []}, fn
+        {{:and, bs, b}, _}, {t, []} ->
+          {[{{:and, bs, b}, [], [{:and, bs}]} | t], [{{:join, bs}, bs, [b, {:and, bs}]}]}
+
+        {{:and, bs, b}, _}, {t, [{_, _, s} | _] = p} ->
+          {[{{:and, bs, b}, [], [{:and, bs} | s]} | t],
+           [{{:join, bs}, bs, [b, {:and, bs} | s]} | p]}
+
+        {id, i}, {t, []} ->
+          {t, [{id, i, []}]}
+
+        {id, i}, {t, [{_, _, s} | _] = p} ->
+          {t, [{id, i, s} | p]}
+      end)
+
+    top_ands
+    |> :lists.reverse(new_path)
+    |> Enum.map(fn
+      {{:join, _} = j, i, [_ | s]} -> {j, i, s}
+      x -> x
+    end)
   end
 end

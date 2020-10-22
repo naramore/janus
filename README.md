@@ -18,10 +18,7 @@ Basically, Pathom in Elixir. See the following for more details:
 
 ## Roadmap
 
-- track output/requires for each resolver (useful for running)
-- track attr sources? (useful for cross-attribute planning?)
-- support multi-attribute queries (i.e. ident + union + query)
-- support subqueries (i.e. join + recursion)
+- support subqueries (i.e. ident + join + recursion)
 - `Janus.Runner` + `Janus.Resolver` (i.e. batching, async, transforming, etc.)
 - weight alorithm behaviour (i.e. OR branches) for `Janus.Runner`
 - `Janus` API (i.e. process/parse, index)
