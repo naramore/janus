@@ -3,7 +3,7 @@ on: push
 env:
   MIX_ENV: test
 jobs:
-  build:
+  static:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v2
@@ -19,28 +19,17 @@ jobs:
           key: ${{ runner.os }}-mix-${{ hashFiles('**/mix.lock') }}
       - run: mix deps.get
       - run: mix compile --warnings-as-errors
-  codecov:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
       - run: mix coveralls.json
+        if: always()
       # - uses: codecov/codecov-action@v1
       #   with:
       #     token: ${{ secrets.CODECOV_TOKEN }}
       #     file: ./cover/excoveralls.json
-  credo:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
+      #   if: always()
       - run: mix credo
-  format:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
+        if: always()
       - run: mix format --check-formatted
-  dialyzer:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
+        if: always()
       - run: mix dialyzer
+        if: always()
         

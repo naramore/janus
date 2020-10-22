@@ -35,9 +35,9 @@ defmodule Janus.Graph do
   @type ast_type ::
           :pre_walk
           | :ident
-          | :pre_subquery
-          | :post_subquery
-          | {:recursion, timeout}
+          | :params
+          | {:pre_subquery | :post_subquery, Resolver.id()}
+          | {:recursion, depth :: timeout}
           | {:post_walk, reachability}
   @type attr_type :: :pre_walk | :cyclic | {:post_walk, reachability}
 
@@ -92,7 +92,7 @@ defmodule Janus.Graph do
 
   @spec output(t, Resolver.id(), [Janus.attr()]) :: Janus.shape_descriptor()
   def output(graph, resolver_id, subquery_path \\ []) do
-    # TODO: unions
+    # TODO: unions (at the moment, this 'flattens' all unions at their respective logical depth)
     graph.dg
     |> :digraph.edges()
     |> Enum.filter(&match?({_, _, _, %{id: ^resolver_id}}, &1))
@@ -123,23 +123,36 @@ defmodule Janus.Graph do
     ast_walker(module, :ident, ident, acc, graph)
   end
 
-  def walk_ast(graph, %Params{expr: expr}, acc, module) do
-    # credo:disable-for-next-line Credo.Check.Design.TagFIXME
-    # FIXME: add params to planner?
-    walk_ast(graph, expr, acc, module)
+  def walk_ast(graph, %Params{expr: expr} = params, acc, module) do
+    case ast_walker(module, :params, params, graph, acc) do
+      {:ok, {graph, acc}} ->
+        walk_ast(graph, expr, acc, module)
+
+      {:error, reason} ->
+        {:error, reason}
+    end
   end
 
   def walk_ast(graph, %Join{key: key, query: %Query{} = q} = join, acc, module) do
-    # credo:disable-for-next-line Credo.Check.Design.TagFIXME
-    # FIXME: refactor query walk_ast -> Enum.reduce/3 on all possible subquery available(s)
-    #        :digraph.in_edges(graph.dg, EQL.get_key(key)) |> (( UNIQUE RESOLVERS )) |> Graph.output(graph, &1, [key | subquery_path]) |> Enum.map(&Map.keys/1)
-    #        ^ that will be the available_data for each subquery
-    with {:ok, {graph, acc}} <- walk_ast(graph, key, acc, module),
-         {:ok, {graph, acc}} <- ast_walker(module, :pre_subquery, join, graph, acc),
-         {:ok, {graph, acc}} <- walk_ast(graph, q, acc, module) do
-      ast_walker(module, :post_subquery, join, graph, acc)
-    else
-      {:error, reason} -> {:error, reason}
+    case walk_ast(graph, key, acc, module) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, {graph, acc}} ->
+        graph
+        |> subqueries(key)
+        |> Enum.reduce({:ok, {graph, acc}}, fn
+          _, {:error, reason} ->
+            {:error, reason}
+
+          r, {:ok, {g, a}} ->
+            with {:ok, {g, a}} <- ast_walker(module, {:pre_subquery, r}, join, g, a),
+                 {:ok, {g, a}} <- walk_ast(g, q, a, module) do
+              ast_walker(module, {:post_subquery, r}, join, g, a)
+            else
+              {:error, reason} -> {:error, reason}
+            end
+        end)
     end
   end
 
@@ -154,9 +167,8 @@ defmodule Janus.Graph do
     end
   end
 
-  def walk_ast(_graph, %Union{}, _acc, _module) do
-    # TODO: flatten union -> 'query' -> walk_ast/4
-    {:error, :not_implemented}
+  def walk_ast(graph, %Union{} = union, acc, module) do
+    walk_ast(graph, Union.to_query(union), acc, module)
   end
 
   def walk_ast(graph, %Query{children: children}, acc, module) do
@@ -332,4 +344,16 @@ defmodule Janus.Graph do
     do: output_info(q, d, p, {m, k})
 
   defp output_info(%Query{children: cs}, d, p, _), do: output_info(cs, d, p, nil)
+
+  @spec subqueries(t, Prop.t()) :: [Resolver.id()]
+  defp subqueries(graph, prop) do
+    graph.dg
+    |> :digraph.in_edges(EQL.get_key(prop))
+    |> Enum.map(fn
+      {_, _, _, %{id: id}} -> id
+      _ -> nil
+    end)
+    |> Enum.reject(&is_nil/1)
+    |> Enum.dedup()
+  end
 end

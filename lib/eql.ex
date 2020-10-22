@@ -350,6 +350,14 @@ defmodule EQL.AST.Union do
 
   def to_ast(_), do: nil
 
+  @spec to_query(t) :: Query.t()
+  def to_query(union) do
+    union.children
+    |> Enum.map(fn e -> e.query.children end)
+    |> Enum.concat()
+    |> Query.new()
+  end
+
   defimpl EQL.AST do
     @impl @protocol
     def to_expr(union) do

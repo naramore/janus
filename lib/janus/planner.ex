@@ -9,6 +9,7 @@ defmodule Janus.Planner do
 
   defstruct available_data: %{},
             resolver_trail: [],
+            # change to %{optional(Janus.attr) => Plan.path} ???
             paths: [],
             plan: nil,
             current_attr: nil
@@ -36,9 +37,21 @@ defmodule Janus.Planner do
     Map.pop(planner, key)
   end
 
+  # :digraph.in_edges(graph.dg, EQL.get_key(key)) |> (( UNIQUE RESOLVERS )) |> Graph.output(graph, &1, [key | subquery_path]) |> Enum.map(&Map.keys/1)
+  # ^ that will be the available_data for each subquery
+
+  # :pre_walk, %Prop{}              -> set current_attr + reset trail
+  # {:post_walk, r}, %Prop{}        -> noop
+  # :ident, %Ident{}                -> add to (subquery?) available_data
+  # :params, %Params{}              -> store params
+  # {:recursion, depth}, %Join{}    -> ???
+  # {:pre_subquery, rid}, %Join{}   -> ???
+  # {:post_subquery, rid}, %Join{}  -> ???
+
+  # NOTE: need to update this struct to better support subqueries...
+
   @impl Graph
   def ast_walker(_type, _ast, _graph, _acc) do
-    # TODO: implement
     {:error, :not_implemented}
   end
 
@@ -101,9 +114,6 @@ defmodule Janus.Planner do
         planner
 
       {:error, reason} ->
-        _ =
-          Logger.error(fn -> "#{Utils.inspect([[id | get_trail(planner)] | planner.paths])}" end)
-
         raise %RuntimeError{message: "#{inspect(reason)}"}
     end
   end
