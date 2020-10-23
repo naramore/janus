@@ -16,7 +16,8 @@ defmodule Janus.Plan do
           required(:type) => type,
           optional(:resolver) => Resolver.id(),
           optional(:params) => map,
-          optional(:input) => [Janus.attr()]
+          optional(:input) => [Janus.attr()],
+          optional(:output) => Janus.shape_descriptor()
         }
 
   @root_start [:root | :start]
@@ -46,25 +47,10 @@ defmodule Janus.Plan do
     end
   end
 
-  @spec required_of(t, Vertex.t() | Vertex.id()) :: Janus.shape_descriptor()
-  def required_of(graph, %Vertex{id: id}) do
-    required_of(graph, id)
-  end
-
-  def required_of(graph, id) do
-    # TODO: recursively traverse until finding one or more resolver nodes
-    graph
-    |> Digraph.out_neighbours(id)
-    |> get_in([Access.all(), :label, :input])
-    |> Enum.reject(&is_nil/1)
-    |> Enum.concat()
-    |> Utils.to_shape_descriptor()
-  end
-
   @spec follow(
           t,
           Vertex.t() | Vertex.id() | nil,
-          [{landmark, Graph.node_id(), scope}],
+          [{landmark, Graph.node_id(), Janus.attr(), scope}],
           Janus.attr(),
           keyword
         ) :: {:ok, t} | {:error, reason :: term}
@@ -107,7 +93,7 @@ defmodule Janus.Plan do
           t,
           Vertex.t(),
           [Vertex.t()] | Vertex.t() | nil,
-          [{landmark, Graph.node_id(), scope}],
+          [{landmark, Graph.node_id(), Janus.attr(), scope}],
           Janus.attr(),
           keyword
         ) ::
@@ -116,14 +102,14 @@ defmodule Janus.Plan do
     follow_impl(graph, current, nil, path, attr, opts)
   end
 
-  defp follow_impl(graph, current, nil, [{l, i, s} | t], attr, opts) do
+  defp follow_impl(graph, current, nil, [{l, i, o, s} | t], attr, opts) do
     graph
-    |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
+    |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
     |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
   end
 
   # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp follow_impl(graph, current, next, [{l, i, s} | t] = p, attr, opts) do
+  defp follow_impl(graph, current, next, [{l, i, o, s} | t] = p, attr, opts) do
     if match_path_next?(next, l) do
       follow(graph, next, t, attr, opts)
     else
@@ -132,7 +118,7 @@ defmodule Janus.Plan do
           graph
           |> inject_or_node(current, next)
           |> Rails.bind(fn {oid, g} ->
-            locate_and_connect(g, oid, l, s, attr, Keyword.put(opts, :input, i))
+            locate_and_connect(g, oid, l, s, attr, push(opts, i, o))
           end)
           |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
@@ -140,11 +126,11 @@ defmodule Janus.Plan do
           case Enum.find(branches, &match?({%{label: %{scope: [b | _]}}, [b | _]}, {&1, s})) do
             nil ->
               graph
-              |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
+              |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
               |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
             branch ->
-              if match_path_next?(branch, hd(t)) do
+              if match_path_next?(branch, elem(hd(t), 0)) do
                 follow(graph, branch, t, attr, opts)
               else
                 graph
@@ -157,7 +143,7 @@ defmodule Janus.Plan do
           case Enum.find(branches, &match_path_next?(&1, l)) do
             nil ->
               graph
-              |> locate_and_connect(current.id, l, s, attr, Keyword.put(opts, :input, i))
+              |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
               |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
 
             branch ->
@@ -179,6 +165,12 @@ defmodule Janus.Plan do
           {:error, :unexpected_form}
       end
     end
+  end
+
+  @spec push(keyword, Graph.node_id(), Janus.attr()) :: keyword
+  defp push(opts, input, output) do
+    input = if is_list(input), do: input, else: [input]
+    Keyword.merge(opts, input: input, output: %{output => %{}})
   end
 
   @spec next(t, Vertex.t(), Janus.attr()) :: [Vertex.t()] | Vertex.t() | nil
@@ -262,7 +254,8 @@ defmodule Janus.Plan do
       id ->
         graph
         |> update_attrs(id, attr)
-        |> update_via_opts(id, opts)
+        |> update_via_opts(id, opts, :params)
+        |> update_via_opts(id, opts, :output)
         |> (&{id, &1}).()
     end
   end
@@ -282,25 +275,25 @@ defmodule Janus.Plan do
     end)
   end
 
-  @spec update_via_opts(t, Vertex.t() | Vertex.id(), keyword) :: t
-  defp update_via_opts(graph, %Vertex{} = vertex, opts) do
-    if Keyword.has_key?(opts, :params) do
-      update_in(graph, [:vertices, vertex.id, :label, :params], fn
+  @spec update_via_opts(t, Vertex.t() | Vertex.id(), keyword, atom) :: t
+  defp update_via_opts(graph, %Vertex{} = vertex, opts, key) do
+    if Keyword.has_key?(opts, key) do
+      update_in(graph, [:vertices, vertex.id, :label, key], fn
         nil ->
-          Keyword.get(opts, :params)
+          Keyword.get(opts, key)
 
         params ->
-          Map.merge(params, Keyword.get(opts, :params), fn _, m1, m2 -> Map.merge(m1, m2) end)
+          Utils.deep_merge(params, Keyword.get(opts, key))
       end)
     else
       graph
     end
   end
 
-  defp update_via_opts(graph, id, opts) do
+  defp update_via_opts(graph, id, opts, key) do
     case Digraph.vertex(graph, id) do
       nil -> graph
-      vertex -> update_via_opts(graph, vertex, opts)
+      vertex -> update_via_opts(graph, vertex, opts, key)
     end
   end
 
@@ -364,30 +357,19 @@ defmodule Janus.Plan do
           keyword
         ) :: node_label
   defp create_node_label(landmark, scope, attr, opts) do
-    input =
-      case Keyword.get(opts, :input, []) do
-        i when is_list(i) -> i
-        i -> [i]
-      end
-
     %{
       scope: scope,
       attrs: if(is_list(attr), do: attr, else: [attr]),
-      type: get_node_type(landmark)
+      type: get_node_type(landmark),
+      resolver: landmark,
+      input: Keyword.get(opts, :input),
+      output: Keyword.get(opts, :output)
     }
-    |> Utils.cond_pipe(
-      &match?(%{type: :resolver}, &1),
-      &Map.merge(&1, %{resolver: landmark, input: input})
-    )
-    |> Utils.cond_pipe(&add_params?(&1, opts), &Map.put(&1, :params, Keyword.get(opts, :params)))
+    |> case do
+      %{type: :resolver} = label -> label
+      label -> Map.drop(label, [:resolver, :input, :output])
+    end
   end
-
-  @spec add_params?(node_label, keyword) :: boolean
-  defp add_params?(%{type: :resolver}, opts) do
-    Keyword.has_key?(opts, :params)
-  end
-
-  defp add_params?(_, _), do: false
 
   @spec get_node_type(landmark | :or | :and | :join) :: type
   defp get_node_type({:and, _, _}), do: :and

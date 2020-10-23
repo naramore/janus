@@ -34,6 +34,9 @@ defmodule Janus.Utils do
     )
   end
 
+  def short_form(x) when is_map(x),
+    do: Enum.map(x, fn {k, v} -> {short_form(k), short_form(v)} end) |> Enum.into(%{})
+
   def short_form([]), do: []
   def short_form([h | t]), do: [short_form(h) | short_form(t)]
   def short_form({:and, ids}), do: {:and, short_form(ids)}
@@ -52,4 +55,12 @@ defmodule Janus.Utils do
       x
     end
   end
+
+  @spec deep_merge(map, map) :: map
+  def deep_merge(m1, m2) do
+    Map.merge(m1, m2, &deep_merge/3)
+  end
+
+  @spec deep_merge(term, map, map) :: map
+  defp deep_merge(_key, m1, m2), do: deep_merge(m1, m2)
 end

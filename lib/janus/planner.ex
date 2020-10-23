@@ -18,8 +18,8 @@ defmodule Janus.Planner do
 
   @type t :: %__MODULE__{
           available_data: Janus.shape_descriptor(),
-          resolver_trail: [{Plan.landmark(), Graph.node_id()}],
-          paths: %{optional(Janus.attr()) => [{Plan.landmark(), Graph.node_id()}]},
+          resolver_trail: [{Plan.landmark(), Graph.node_id(), Janus.attr()}],
+          paths: %{optional(Janus.attr()) => [{Plan.landmark(), Graph.node_id(), Janus.attr()}]},
           plan: Digraph.t(),
           current_attr: Janus.attr() | nil,
           params: map | nil
@@ -94,11 +94,11 @@ defmodule Janus.Planner do
     attr_walker(:pre_walk, {nil, i, o, %{id: {:and, o, i}}}, graph, planner)
   end
 
-  def attr_walker(:pre_walk, {_, i, _, %{id: id}}, graph, planner) do
+  def attr_walker(:pre_walk, {_, i, o, %{id: id}}, graph, planner) do
     if available?(planner, i) do
-      {:found, graph, add_path(planner, id, i)}
+      {:found, graph, add_path(planner, id, i, o)}
     else
-      {:reachable, graph, add_trail(planner, id, i)}
+      {:reachable, graph, add_trail(planner, id, i, o)}
     end
   end
 
@@ -164,18 +164,21 @@ defmodule Janus.Planner do
     input in Map.keys(planner.available_data)
   end
 
-  @spec add_trail(t, Plan.landmark(), Graph.node_id()) :: t
-  defp add_trail(planner, id, input) do
-    Map.update!(planner, :resolver_trail, &[{id, input} | &1])
+  @spec add_trail(t, Plan.landmark(), Graph.node_id(), Janus.attr()) :: t
+  defp add_trail(planner, id, input, output) do
+    Map.update!(planner, :resolver_trail, &[{id, input, output} | &1])
   end
 
   @spec tail_trail(t) :: t
   defp tail_trail(planner), do: Map.update!(planner, :resolver_trail, &tl/1)
 
-  @spec add_path(t, Plan.landmark(), Graph.node_id(), keyword) :: t
-  defp add_path(planner, id, input, opts \\ []) do
+  @spec add_path(t, Plan.landmark(), Graph.node_id(), Janus.attr(), keyword) :: t
+  defp add_path(planner, id, input, output, opts \\ []) do
     planner
-    |> update_in([:paths, planner.current_attr], &[[{id, input} | planner.resolver_trail] | &1])
+    |> update_in(
+      [:paths, planner.current_attr],
+      &[[{id, input, output} | planner.resolver_trail] | &1]
+    )
     |> update_plan(update_opts(planner, opts))
     |> case do
       {:ok, planner} ->
@@ -203,32 +206,32 @@ defmodule Janus.Planner do
   end
 
   # NOTE: this 'path' is getting so complicated as is, I'm considering a struct...
-  @spec pre_process_path([{Plan.landmark(), Graph.node_id()}]) :: [
-          {Plan.landmark(), Graph.node_id(), Plan.scope()}
+  @spec pre_process_path([{Plan.landmark(), Graph.node_id(), Janus.attr()}]) :: [
+          {Plan.landmark(), Graph.node_id(), Janus.attr(), Plan.scope()}
         ]
   defp pre_process_path(path) do
     {top_ands, new_path} =
       path
       |> :lists.reverse()
       |> Enum.reduce({[], []}, fn
-        {{:and, bs, b}, _}, {t, []} ->
-          {[{{:and, bs, b}, [], [{:and, bs}]} | t], [{{:join, bs}, bs, [b, {:and, bs}]}]}
+        {{:and, bs, b}, _, _}, {t, []} ->
+          {[{{:and, bs, b}, [], [], [{:and, bs}]} | t], [{{:join, bs}, bs, [], [b, {:and, bs}]}]}
 
-        {{:and, bs, b}, _}, {t, [{_, _, s} | _] = p} ->
-          {[{{:and, bs, b}, [], [{:and, bs} | s]} | t],
-           [{{:join, bs}, bs, [b, {:and, bs} | s]} | p]}
+        {{:and, bs, b}, _, _}, {t, [{_, _, _, s} | _] = p} ->
+          {[{{:and, bs, b}, [], [], [{:and, bs} | s]} | t],
+           [{{:join, bs}, bs, [], [b, {:and, bs} | s]} | p]}
 
-        {id, i}, {t, []} ->
-          {t, [{id, i, []}]}
+        {id, i, o}, {t, []} ->
+          {t, [{id, i, o, []}]}
 
-        {id, i}, {t, [{_, _, s} | _] = p} ->
-          {t, [{id, i, s} | p]}
+        {id, i, o}, {t, [{_, _, _, s} | _] = p} ->
+          {t, [{id, i, o, s} | p]}
       end)
 
     top_ands
     |> :lists.reverse(new_path)
     |> Enum.map(fn
-      {{:join, _} = j, i, [_ | s]} -> {j, i, s}
+      {{:join, _} = j, i, o, [_ | s]} -> {j, i, o, s}
       x -> x
     end)
   end
