@@ -7,8 +7,20 @@
 >
 > [Wikipedia](https://en.wikipedia.org/wiki/Janus)
 
-Basically, Pathom in Elixir. See the following for more details:
-- [The Maximal Graph](https://www.youtube.com/watch?v=IS3i3DTUnAI)
+I've been a huge fan of GraphQL and everything that specification
+has accomplished. When compared to other similar wire standards,
+GraphQL's combination of power, tooling, community support,
+extensibility and other amazing tools like
+[Apollo Federation](https://www.apollographql.com/docs/federation/)
+blow other tools out of the water (in *my* opinion).
+
+But when I saw [The Maximal Graph](https://www.youtube.com/watch?v=IS3i3DTUnAI)
+by [Wilker Lúcio](https://github.com/wilkerlucio), the simplicity and
+power of [Pathom](https://github.com/wilkerlucio/pathom)'s model converted me.
+Thanks to Wilker Lúcio for all the great work, it's only because
+of his work (and presentations) on Pathom that this library exists!
+
+Janus is basically Pathom in Elixir. See the following for more details:
 - [Pathom 3 is Comming](https://blog.wsscode.com/pathom-3-is-coming/)
 - [Pathom 3 GitHub](https://github.com/wilkerlucio/pathom3)
 - [Pathom GitHub](https://github.com/wilkerlucio/pathom)

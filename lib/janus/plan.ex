@@ -33,9 +33,10 @@ defmodule Janus.Plan do
   @spec create_attr_root_node(t, Janus.attr()) ::
           {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   def create_attr_root_node(graph, attr) do
+    # TODO: update root_start attrs
     case lookup(graph, :or, [], attr) do
       nil ->
-        {attr_root, graph} = create_node(graph, :or, [], attr)
+        {attr_root, graph} = create_node(graph, :or, [], attr, id: attr)
 
         case connect(graph, @root_start, attr_root, attr) do
           {:ok, {_, g}} -> {:ok, {attr_root, g}}
@@ -45,6 +46,18 @@ defmodule Janus.Plan do
       id ->
         {:ok, {id, graph}}
     end
+  end
+
+  # TODO: def connect_to_root_end(t, Vertex.id, Janus.attr) :: {:ok, {Edge.t(), t}} | {:error, reason :: term}
+
+  @spec find_attr_resolvers(t, Janus.attr()) :: [Vertex.t()]
+  def find_attr_resolvers(graph, attr) do
+    graph
+    |> Digraph.vertices()
+    |> Enum.filter(fn
+      %{label: %{type: :resolver, output: out}} -> attr in Map.keys(out)
+      _ -> false
+    end)
   end
 
   @spec follow(
@@ -234,7 +247,7 @@ defmodule Janus.Plan do
 
   @spec connect(t, Vertex.id(), Vertex.id(), [Janus.attr()] | Janus.attr() | nil) ::
           {:ok, {Edge.t(), t}} | {:error, reason :: term}
-  defp connect(graph, v1, v2, attr) do
+  def connect(graph, v1, v2, attr \\ nil) do
     graph
     |> Digraph.out_neighbours(v1)
     |> Enum.find(fn v -> v.id == v2 and attr_match?(v, attr) end)

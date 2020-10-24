@@ -1,7 +1,18 @@
 defmodule Janus.Graph do
-  @moduledoc false
+  @moduledoc """
+  Reverse, Preorder, Directed Graph Traversal from a given
+  starting point with an accumulating behaviour.
 
-  alias Janus.{Resolver, Utils}
+  *Reverse* because this traverses in the opposite direction
+  the edges are pointing. *Preorder*, the depth-first tree
+  traversal strategy.
+
+  Primarily used in conjunction with `Janus.Planner` to
+  transform an `EQL` query into a graph that resolvers to needed
+  to be executed in order to fulfill it.
+  """
+
+  alias Janus.Resolver
   alias EQL.AST.{Ident, Join, Params, Prop, Query, Union, Union.Entry}
 
   @behaviour Access
@@ -88,38 +99,6 @@ defmodule Janus.Graph do
   @spec attr_walker(module, attr_type, edge, t, acc) :: {reachability, t, acc}
   def attr_walker(module, type, edge, graph, acc) do
     module.attr_walker(type, edge, graph, acc)
-  end
-
-  @spec inputs(t, [Resolver.id()]) :: [Janus.attr()]
-  def inputs(graph, resolver_ids) do
-    graph.dg
-    |> :digraph.edges()
-    |> Enum.filter(fn
-      {_, _, _, %{id: id}} -> id in resolver_ids
-      _ -> false
-    end)
-    |> Enum.dedup_by(fn {_, _, _, %{id: id}} -> id end)
-    |> Enum.map(&elem(&1, 1))
-    |> Enum.dedup()
-  end
-
-  @spec output(t, Resolver.id(), [Janus.attr()]) :: Janus.shape_descriptor()
-  def output(graph, resolver_id, subquery_path \\ []) do
-    # NOTE: at the moment, this 'flattens' all unions at their respective logical depth
-    graph.dg
-    |> :digraph.edges()
-    |> Enum.filter(&match?({_, _, _, %{id: ^resolver_id}}, &1))
-    |> Enum.group_by(fn {_, _, _, %{parent: x}} -> x end)
-    |> Enum.filter(fn {k, _} -> List.starts_with?(k, subquery_path) end)
-    |> Enum.map(fn {k, v} -> {Enum.drop(k, length(subquery_path)), v} end)
-    |> Enum.sort_by(fn {k, _} -> length(k) end)
-    |> Enum.reduce(%{}, fn
-      {[], attrs}, _ ->
-        Utils.to_shape_descriptor(attrs)
-
-      {p, attrs}, acc ->
-        update_in(acc, :lists.reverse(p), &Map.merge(&1, Utils.to_shape_descriptor(attrs)))
-    end)
   end
 
   @spec walk_ast(t, EQL.AST.t(), acc, module) :: {:ok, {t, acc}} | {:error, reason :: term}
@@ -376,5 +355,24 @@ defmodule Janus.Graph do
     end)
     |> Enum.reject(&is_nil/1)
     |> Enum.dedup()
+  end
+
+  @doc false
+  defmacro __using__(_opts) do
+    quote do
+      @behaviour Janus.Graph
+
+      @spec walk_ast(Janus.Graph.t(), EQL.AST.t(), Janus.Graph.acc()) ::
+              {:ok, {Janus.Graph.t(), Janus.Graph.acc()}} | {:error, reason :: term}
+      def walk_ast(graph, ast, acc) do
+        Janus.Graph.walk_ast(graph, ast, acc, __MODULE__)
+      end
+
+      @spec walk_attr(Janus.Graph.t(), Janus.Graph.node_id(), Janus.Graph.acc()) ::
+              {Janus.Graph.reachability(), Janus.Graph.t(), Janus.Graph.acc()}
+      def walk_attr(graph, node_id, acc) do
+        Janus.Graph.walk_attr(graph, node_id, acc, __MODULE__)
+      end
+    end
   end
 end

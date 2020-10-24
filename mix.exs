@@ -26,6 +26,7 @@ defmodule Janus.MixProject do
       docs: docs(),
       test_coverage: [tool: ExCoveralls],
       boundary: [externals_mode: :relaxed],
+      preferred_cli_env: [check: :test],
       dialyzer: [
         flags: [
           :underspecs,
@@ -90,6 +91,7 @@ defmodule Janus.MixProject do
         "compile --warnings-as-errors",
         "credo",
         "dialyzer",
+        "test",
         "format"
       ]
     ]

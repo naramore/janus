@@ -1,12 +1,12 @@
 defmodule Janus.Planner do
   @moduledoc false
 
+  use Janus.Graph
   alias Digraph.Vertex
   alias EQL.AST.{Ident, Join, Params, Prop}
   alias Janus.{Graph, Plan, Utils}
   require Logger
 
-  @behaviour Janus.Graph
   @behaviour Access
 
   defstruct available_data: %{},
@@ -42,45 +42,133 @@ defmodule Janus.Planner do
     Map.pop(planner, key)
   end
 
-  @impl Graph
-  def ast_walker(:pre_walk, %Prop{} = _prop, _graph, _acc) do
-    # TODO: if existing source: backtrack plan + mark attr + connect + skip
-    #       otherwise: set current_attr + reset trail + cont
-    {:error, :not_implemented}
+  @spec backtrack_and_mark(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
+  def backtrack_and_mark(planner, attr, vertices) do
+    case backtrack(planner, attr, vertices) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, planner} ->
+        Enum.reduce(vertices, {:ok, planner}, fn
+          _, {:error, reason} ->
+            {:error, reason}
+
+          v, {:ok, p} ->
+            update_in(
+              p,
+              [:plan, :vertices, v.id, :label, :output],
+              &Utils.deep_merge(&1, %{attr => %{}})
+            )
+            |> (&Plan.connect(&1.plan, v.id, [:root | :end])).()
+            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+            |> case do
+              {:error, reason} -> {:error, reason}
+              {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
+            end
+        end)
+    end
   end
 
-  def ast_walker({:post_walk, :unreachable}, %Prop{} = prop, _graph, _acc) do
+  @spec backtrack(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
+  def backtrack(planner, attr, vertices) do
+    Enum.reduce(vertices, {:ok, planner}, fn
+      _, {:error, reason} ->
+        {:error, reason}
+
+      v, {:ok, p} ->
+        planner =
+          update_in(p, [:plan, :vertices, v.id, :label, :attrs], fn
+            nil ->
+              [attr]
+
+            attrs ->
+              if attr in attrs do
+                attrs
+              else
+                [attr | attrs]
+              end
+          end)
+
+        planner.plan
+        |> Digraph.in_neighbours(v.id)
+        |> Enum.filter(&match?(%{id: [:"$v" | _]}, &1))
+        |> case do
+          [] ->
+            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+            case Plan.connect(planner.plan, attr, v.id) do
+              {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
+              {:error, reason} -> {:error, reason}
+            end
+
+          next ->
+            backtrack(planner, attr, next)
+        end
+    end)
+  end
+
+  @impl Graph
+  def ast_walker(:pre_walk, %Prop{} = prop, graph, planner) do
+    # TODO: root_start and root_end need their attrs updated
+    # TODO: fix this to look for available attrs as well and NOT backtrack in those situations
+    # TODO: refactor -> with
+    case EQL.get_key(prop) do
+      nil ->
+        {:error, {:invalid_prop, prop}}
+
+      attr ->
+        case Plan.find_attr_resolvers(planner.plan, attr) do
+          [] ->
+            {:cont, graph, reset(planner, attr)}
+
+          vertices ->
+            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+            case Plan.create_attr_root_node(planner.plan, attr) do
+              {:error, reason} ->
+                {:error, reason}
+
+              {:ok, {_, plan}} ->
+                # credo:disable-for-next-line Credo.Check.Refactor.Nesting
+                case backtrack_and_mark(%{planner | plan: plan}, attr, vertices) do
+                  {:error, reason} -> {:error, reason}
+                  {:ok, planner} -> {:skip, graph, planner}
+                end
+            end
+        end
+    end
+  end
+
+  def ast_walker({:post_walk, :unreachable}, %Prop{} = prop, _graph, _planner) do
     {:error, {:unreachable_prop, prop}}
   end
 
-  def ast_walker({:post_walk, _}, %Prop{}, graph, acc) do
-    {:cont, graph, reset(acc)}
+  def ast_walker({:post_walk, _}, %Prop{}, graph, planner) do
+    {:cont, graph, reset(planner)}
   end
 
-  def ast_walker({:pre_walk, :params}, %Params{params: params}, graph, acc) do
-    {:cont, graph, %{acc | params: params}}
+  def ast_walker({:pre_walk, :params}, %Params{params: params}, graph, planner) do
+    {:cont, graph, %{planner | params: params}}
   end
 
-  def ast_walker({:post_walk, :params}, %Params{}, graph, acc) do
-    {:cont, graph, %{acc | params: nil}}
+  def ast_walker({:post_walk, :params}, %Params{}, graph, planner) do
+    {:cont, graph, %{planner | params: nil}}
   end
 
-  def ast_walker(:ident, %Ident{}, _graph, _acc) do
+  def ast_walker(:ident, %Ident{}, _graph, _planner) do
     # TODO: add to (subquery?) available_data?
     {:error, :not_implemented}
   end
 
-  def ast_walker({:pre_subquery, _rid}, %Join{}, _graph, _acc) do
+  def ast_walker({:pre_subquery, _rid}, %Join{}, _graph, _planner) do
     # TODO: implement
     {:error, :not_implemented}
   end
 
-  def ast_walker({:post_subquery, _rid}, %Join{}, _graph, _acc) do
+  def ast_walker({:post_subquery, _rid}, %Join{}, _graph, _planner) do
     # TODO: implement
     {:error, :not_implemented}
   end
 
-  def ast_walker({:recursion, _depth}, %Join{}, _graph, _acc) do
+  def ast_walker({:recursion, _depth}, %Join{}, _graph, _planner) do
     # TODO: implement
     {:error, :not_implemented}
   end
@@ -202,10 +290,11 @@ defmodule Janus.Planner do
       {:ok, %{planner | plan: plan}}
     else
       {:error, reason} -> {:error, reason}
+      _ -> {:error, :unknown}
     end
   end
 
-  # NOTE: this 'path' is getting so complicated as is, I'm considering a struct...
+  # NOTE: this 'path' is getting so complicated as is, convert to a struct?
   @spec pre_process_path([{Plan.landmark(), Graph.node_id(), Janus.attr()}]) :: [
           {Plan.landmark(), Graph.node_id(), Janus.attr(), Plan.scope()}
         ]

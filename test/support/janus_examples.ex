@@ -1,14 +1,37 @@
 defmodule JanusExamples do
   @moduledoc false
   use Boundary, check: [in: true, out: false]
-  alias Janus.{Graph, Planner, Resolver}
+  alias Janus.{Planner, Resolver}
 
-  def test do
+  def test_ast do
+    planner =
+      Planner.new([
+        {Complex, :c},
+        {Complex, :q},
+        {Complex, :t},
+        {Complex, :u},
+        {Complex, :ae}
+      ])
+
+    ast =
+      EQL.to_ast([
+        {Complex, :p},
+        {Complex, :m},
+        # {Complex, :ae},
+        {Complex, :n}
+      ])
+
+    JanusExamples.complex_resolvers()
+    |> Janus.Graph.new()
+    |> Planner.walk_ast(ast, planner)
+  end
+
+  def test_attr do
     planner = Planner.new(complex_source())
 
     JanusExamples.complex_resolvers()
     |> Janus.Graph.new()
-    |> Graph.walk_attr(complex_attr(), Planner.reset(planner, complex_attr()), Planner)
+    |> Planner.walk_attr(complex_attr(), Planner.reset(planner, complex_attr()))
   end
 
   def complex_source do

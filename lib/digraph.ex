@@ -1,9 +1,14 @@
 defmodule Digraph do
-  @moduledoc false
+  @moduledoc """
+  `Digraph` is a struct-based implementation of `:digraph`.
+
+  ## Notes
+
+  This will not enforce the `:acyclic` option.
+
+  """
+
   use Boundary, deps: [], exports: []
-
-  # NOTE: will NOT enforce :acyclic option
-
   alias Digraph.{Edge, Vertex}
 
   @behaviour Access

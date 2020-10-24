@@ -1,5 +1,10 @@
 defmodule Rails do
-  @moduledoc false
+  @moduledoc """
+  Partial Railway Oriented Programming implementation in Elixir.
+
+  See this [blog article](https://fsharpforfunandprofit.com/rop/)
+  for more details.
+  """
 
   use Boundary, deps: [], exports: []
   require Logger

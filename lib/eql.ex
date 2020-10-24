@@ -1,5 +1,239 @@
 defmodule EQL do
-  @moduledoc false
+  @moduledoc """
+  EDN Query Language (`EQL`) is a reimplementation of
+  [EQL](https://github.com/edn-query-language/eql) in Elixir.
+
+  Unlike Clojure, Elixir does not possess an [Extensible Data
+  Notation (EDN)](https://github.com/edn-format/edn) equivalent
+  at the time of this writing.
+
+  ## Query / Transaction
+
+  An `EQL` transaction is represented by a `List`.
+
+  A transaction that only contains reads is commonly called a query,
+  but notice that at the syntax level, it has no difference.
+
+  ### Examples
+
+  An empty transaction / query:
+
+    iex> empty_txn = []
+    iex> EQL.to_ast(empty_txn)
+    %EQL.AST.Query{children: []}
+
+  ## Properties
+
+  Properties are expressed as Elixir `{module, atom}` tuples;
+  they express the property been requested.
+
+  ### Examples
+
+    iex> query = [{Album, :name}, {Album, :year}]
+    iex> EQL.to_ast(query)
+    %EQL.AST.Query{children: [%EQL.AST.Prop{module: Album, key: :name},
+                              %EQL.AST.Prop{module: Album, key: :year}]}
+
+  ## Joins
+
+  Joins are used to describe nesting in the request transaction.
+  They are represented as Elixir `Map`s, always with a single entry,
+  the key is the property to join on, and the value is a sub-query to run.
+
+  ### Examples
+
+  Simple join
+
+    iex> join = [%{{Favorite, :albums} => [{Album, :name}, {Album, :year}]}]
+    iex> EQL.to_ast(join)
+    %EQL.AST.Query{children: [
+      %EQL.AST.Join{
+        key: %EQL.AST.Prop{module: Favorite, key: :albums},
+        query: %EQL.AST.Query{children: [
+          %EQL.AST.Prop{module: Album, key: :name},
+          %EQL.AST.Prop{module: Album, key: :year}
+        ]}
+      }
+    ]}
+
+  Nested joins
+
+    iex> join = [%{{Favorite, :albums} => [
+    ...>   {Album, :name},
+    ...>   {Album, :year},
+    ...>   %{{Album, :tracks} => [
+    ...>     {Track, :name},
+    ...>     {Track, :duration}
+    ...>   ]}
+    ...> ]}]
+    iex> EQL.to_ast(join)
+    %EQL.AST.Query{children: [
+      %EQL.AST.Join{
+        key: %EQL.AST.Prop{module: Favorite, key: :albums},
+        query: %EQL.AST.Query{children: [
+          %EQL.AST.Prop{module: Album, key: :name},
+          %EQL.AST.Prop{module: Album, key: :year},
+          %EQL.AST.Join{
+            key: %EQL.AST.Prop{module: Album, key: :tracks},
+            query: %EQL.AST.Query{children: [
+              %EQL.AST.Prop{module: Track, key: :name},
+              %EQL.AST.Prop{module: Track, key: :duration}
+            ]}
+          }
+        ]}
+      }
+    ]}
+
+  ## Idents
+
+  Idents are represented by a `{property, value}` tuple, where the first
+  is a property and the second can be anything. They are like (lookup refs
+  on Datomic)[https://blog.datomic.com/2014/02/datomic-lookup-refs.html], in
+  general, they can provide an address-like thing, and their use and
+  semantics might vary from system to system.
+
+  ### Examples
+
+      iex> ident = [{{Customer, :id}, 123}]
+      iex> EQL.to_ast(ident)
+      %EQL.AST.Query{children: [
+        %EQL.AST.Ident{
+          key: %EQL.AST.Prop{module: Customer, key: :id},
+          value: 123
+        }
+      ]}
+
+  It’s common to use an ident as a join key to start a query for some entity:
+
+    iex> join = [%{{{Customer, :id}, 123} => [
+    ...>   {Customer, :name},
+    ...>   {Customer, :email}
+    ...> ]}]
+    iex> EQL.to_ast(join)
+    %EQL.AST.Query{children: [
+      %EQL.AST.Join{
+        key: %EQL.AST.Ident{
+          key: %EQL.AST.Prop{module: Customer, key: :id},
+          value: 123
+        },
+        query: %EQL.AST.Query{children: [
+          %EQL.AST.Prop{module: Customer, key: :name},
+          %EQL.AST.Prop{module: Customer, key: :email}
+        ]}
+      }
+    ]}
+
+  ## Parameters
+
+  `EQL` properties, joins, and idents have support for parametrization.
+  This allows the query to provide an extra dimension of information about the requested data.
+  A parameter is expressed by wrapping the thing with an improper list, like so:
+
+    iex> # without params
+    iex> EQL.to_ast([{Foo, :bar}])
+    %EQL.AST.Query{children: [%EQL.AST.Prop{module: Foo, key: :bar}]}
+
+    iex> # with params
+    iex> EQL.to_ast([[{Foo, :bar} | %{with: "params"}]])
+    %EQL.AST.Query{children: [
+      %EQL.AST.Params{
+        expr: %EQL.AST.Prop{module: Foo, key: :bar},
+        params: %{with: "params"}
+      }
+    ]}
+
+  Params must always be maps, the map values can be anything.
+
+  ## Unions
+
+  In `EQL` unions are used to specify polymorphic requirements.
+  For example, a messaging app may have a single list, and each
+  entry on the chat log can be a message, audio or photo, each
+  having its own query requirement.
+
+      # message query
+      [{Message, :id}, {Message, :text}, {Chat.Entry, :timestamp}]
+
+      # audio query
+      [{Audio, :id}, {Audio, :url}, {Audio, :duration}, {Chat.Entry, :timestamp}]
+
+      # photo query
+      [{Photo, :id}, {Photo, :url}, {Photo, :width}, {Photo, :height}, {Chat.Entry, :timestamp}]
+
+      # list query
+      [%{{Chat, :entries} => "???"}]
+
+  Now to express this polymorphic requirement as the sub-query of the
+  `{Chat, :entries}` list we can use a map as the join value, and each
+  entry on this map represents a possible sub-query.
+
+  The way this information is used is up to the parser implementation;
+  EQL only defines the syntax.
+
+  ### Examples
+
+    iex> union = [%{{Chat, :entries} => %{
+    ...>   {Message, :id} => [{Message, :id}, {Message, :text}, {Chat.Entry, :timestamp}],
+    ...>   {Audio, :id} => [{Audio, :id}, {Audio, :url}, {Audio, :duration}, {Chat.Entry, :timestamp}],
+    ...>   {Photo, :id} => [{Photo, :id}, {Photo, :url}, {Photo, :width}, {Photo, :height}, {Chat.Entry, :timestamp}]
+    ...> }}]
+    iex> EQL.to_ast(union)
+    %EQL.AST.Query{children: [
+      %EQL.AST.Join{
+        key: %EQL.AST.Prop{module: Chat, key: :entries},
+        query: %EQL.AST.Union{children: [
+          %EQL.AST.Union.Entry{
+            key: %EQL.AST.Prop{module: Audio, key: :id},
+            query: %EQL.AST.Query{children: [
+              %EQL.AST.Prop{module: Audio, key: :id},
+              %EQL.AST.Prop{module: Audio, key: :url},
+              %EQL.AST.Prop{module: Audio, key: :duration},
+              %EQL.AST.Prop{module: Chat.Entry, key: :timestamp},
+            ]}
+          },
+          %EQL.AST.Union.Entry{
+            key: %EQL.AST.Prop{module: Message, key: :id},
+            query: %EQL.AST.Query{children: [
+              %EQL.AST.Prop{module: Message, key: :id},
+              %EQL.AST.Prop{module: Message, key: :text},
+              %EQL.AST.Prop{module: Chat.Entry, key: :timestamp},
+            ]}
+          },
+          %EQL.AST.Union.Entry{
+            key: %EQL.AST.Prop{module: Photo, key: :id},
+            query: %EQL.AST.Query{children: [
+              %EQL.AST.Prop{module: Photo, key: :id},
+              %EQL.AST.Prop{module: Photo, key: :url},
+              %EQL.AST.Prop{module: Photo, key: :width},
+              %EQL.AST.Prop{module: Photo, key: :height},
+              %EQL.AST.Prop{module: Chat.Entry, key: :timestamp},
+            ]}
+          },
+        ]}
+      }
+    ]}
+
+  ## Mutations
+
+  Mutations in `EQL` are used to represent operation calls,
+  usually to do something that will cause a side effect.
+  Mutations as data allows that operation to behave much like event sourcing,
+  and can be transparently applied locally, across a network, onto an event bus, etc.
+
+  ### Examples
+
+  A mutation is represented by a list of two elements; the first is the symbol that names the mutation, and the second is a map with input data.
+
+    iex> mutation = [{Call.Some, :operation, ["input"]}]
+    iex> EQL.to_ast(mutation)
+    %EQL.AST.Query{children: [
+      %EQL.AST.Mutation{
+        module: Call.Some,
+        fun: :operation,
+        args: ["input"]
+      }
+    ]}
+  """
 
   use Boundary, deps: [], exports: []
   alias EQL.AST
@@ -38,476 +272,4 @@ defmodule EQL do
   defdelegate params(expr, params), to: AST.Params, as: :new
 
   defdelegate mutation(module, fun, args), to: AST.Mutation, as: :new
-end
-
-defprotocol EQL.AST do
-  @moduledoc false
-
-  @spec to_expr(t) :: term
-  def to_expr(ast)
-
-  @spec get_key(t) :: EQL.AST.Prop.expr() | nil
-  def get_key(ast)
-end
-
-defmodule EQL.Expression do
-  @moduledoc false
-
-  alias EQL.AST
-
-  @callback to_ast(term) :: AST.t() | nil
-
-  @spec to_ast([module] | module, term) :: AST.t() | nil
-  def to_ast([], _), do: nil
-
-  def to_ast([module | t], term) do
-    case to_ast(module, term) do
-      nil -> to_ast(t, term)
-      otherwise -> otherwise
-    end
-  end
-
-  def to_ast(module, term) do
-    module.to_ast(term)
-  end
-end
-
-defmodule EQL.AST.Prop do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  defstruct module: nil,
-            key: nil
-
-  @type t :: %__MODULE__{
-          module: module,
-          key: atom
-        }
-
-  @type expr :: {module, atom}
-
-  @spec new(module, atom) :: t
-  def new(module, key) do
-    %__MODULE__{
-      module: module,
-      key: key
-    }
-  end
-
-  defguard is_prop(x)
-           when is_tuple(x) and tuple_size(x) == 2 and is_atom(elem(x, 0)) and is_atom(elem(x, 1))
-
-  @impl EQL.Expression
-  def to_ast({module, key} = expr) when is_prop(expr) do
-    new(module, key)
-  end
-
-  def to_ast(_), do: nil
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(prop) do
-      {prop.module, prop.key}
-    end
-
-    @impl @protocol
-    def get_key(prop) do
-      to_expr(prop)
-    end
-  end
-end
-
-defmodule EQL.AST.Ident do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.{AST.Prop, Expression}
-  import EQL.AST.Prop, only: [is_prop: 1]
-
-  defstruct key: nil,
-            value: nil
-
-  @type t :: %__MODULE__{
-          key: Prop.t(),
-          value: term
-        }
-
-  @type expr :: {Prop.expr(), term}
-
-  @spec new(Prop.t(), term) :: t
-  def new(key, value) do
-    %__MODULE__{
-      key: key,
-      value: value
-    }
-  end
-
-  defguard is_ident(x) when is_tuple(x) and tuple_size(x) == 2 and is_prop(elem(x, 0))
-
-  @impl Expression
-  def to_ast({key, value} = expr) when is_ident(expr) do
-    case Expression.to_ast(Prop, key) do
-      %Prop{} = prop -> new(prop, value)
-      _ -> nil
-    end
-  end
-
-  def to_ast(_), do: nil
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(ident) do
-      {@protocol.to_expr(ident.key), ident.value}
-    end
-
-    @impl @protocol
-    def get_key(ident) do
-      @protocol.to_expr(ident.key)
-    end
-  end
-end
-
-defmodule EQL.AST.Query do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.Expression
-  alias EQL.AST.{Ident, Join, Mutation, Params, Prop}
-
-  defstruct children: []
-
-  @type t :: %__MODULE__{
-          children: [Prop.t() | Join.t() | Ident.t() | Mutation.t() | Params.t() | special]
-        }
-
-  @type expr :: [query_expr]
-  @type query_expr ::
-          Prop.expr()
-          | Join.expr()
-          | Ident.expr()
-          | Mutation.expr()
-          | Params.expr()
-          | special
-  @type special :: :*
-
-  @spec new([Prop.t() | Join.t() | Ident.t() | Mutation.t() | Params.t() | special]) :: t
-  def new(children \\ []) do
-    %__MODULE__{
-      children: children
-    }
-  end
-
-  defguard is_query(x) when is_list(x) and length(x) >= 0
-
-  @impl Expression
-  def to_ast(query) when is_query(query) do
-    children =
-      Enum.map(query, fn
-        :* -> :*
-        x -> Expression.to_ast([Prop, Ident, Join, Params, Mutation], x)
-      end)
-
-    unless Enum.any?(children, &is_nil/1) do
-      new(children)
-    end
-  end
-
-  def to_ast(_), do: nil
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(query) do
-      Enum.map(query.children, fn
-        :* -> :*
-        x -> @protocol.to_expr(x)
-      end)
-    end
-
-    @impl @protocol
-    def get_key(_), do: nil
-  end
-end
-
-defmodule EQL.AST.Join do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.Expression
-  alias EQL.AST.{Ident, Mutation, Params, Prop, Query, Union}
-
-  defstruct key: nil,
-            query: nil
-
-  @type t(p, q) :: %__MODULE__{
-          key: p,
-          query: q
-        }
-  @type t ::
-          t(
-            Prop.t() | Ident.t() | Params.t(Prop.t() | Ident.t()),
-            Query.t() | Union.t() | recursion
-          )
-
-  @type expr :: %{
-          required(prop_or_ident | Params.expr(prop_or_ident)) =>
-            Query.expr() | Union.expr() | recursion
-        }
-  @type mutation_join :: t(Mutation.t(), Query.t())
-  @type prop_or_ident :: Prop.expr() | Ident.expr()
-  @type recursion :: non_neg_integer | :infinity
-
-  @spec new(
-          Prop.t() | Ident.t() | Params.t(Prop.t() | Ident.t()),
-          Query.t() | Union.t() | recursion
-        ) :: t
-  def new(key, query) do
-    %__MODULE__{
-      key: key,
-      query: query
-    }
-  end
-
-  defguard is_join(x) when is_map(x) and map_size(x) == 1
-
-  @impl Expression
-  def to_ast(join) when is_join(join) do
-    with {key, val} <- extract_key_query(join),
-         key when not is_nil(key) <- Expression.to_ast([Prop, Ident, Params], key),
-         query when not is_nil(query) <- subquery_to_ast(val) do
-      new(key, query)
-    else
-      _ -> nil
-    end
-  end
-
-  def to_ast(_), do: nil
-
-  @spec extract_key_query(map) :: {term, term}
-  defp extract_key_query(join) do
-    [key | _] = Map.keys(join)
-    {key, Map.get(join, key)}
-  end
-
-  @spec subquery_to_ast(term) :: Query.t() | Union.t() | recursion | nil
-  defp subquery_to_ast(:infinity), do: :infinity
-  defp subquery_to_ast(subquery) when is_integer(subquery), do: subquery
-
-  defp subquery_to_ast(subquery) do
-    Expression.to_ast([Query, Union], subquery)
-  end
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(join) do
-      %{@protocol.to_expr(join.key) => @protocol.to_expr(join.query)}
-    end
-
-    @impl @protocol
-    def get_key(join) do
-      @protocol.to_expr(join.key)
-    end
-  end
-end
-
-defmodule EQL.AST.Union do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.Expression
-  alias EQL.AST.{Prop, Query, Union.Entry}
-
-  defstruct children: []
-
-  @type t :: %__MODULE__{
-          children: [Entry.t()]
-        }
-
-  @type expr :: %{required(Prop.expr()) => Query.expr()}
-
-  @spec new([Entry.t()]) :: t
-  def new(children \\ []) do
-    %__MODULE__{
-      children: children
-    }
-  end
-
-  defguard is_union(x) when is_map(x) and map_size(x) > 0
-
-  @impl Expression
-  def to_ast(union) when is_union(union) do
-    children =
-      Enum.map(union, fn {p, q} -> {Expression.to_ast(Prop, p), Expression.to_ast(Query, q)} end)
-
-    unless Enum.any?(children, fn {p, q} -> is_nil(p) or is_nil(q) end) do
-      children
-      |> Enum.map(fn {p, q} -> __MODULE__.Entry.new(p, q) end)
-      |> new()
-    end
-  end
-
-  def to_ast(_), do: nil
-
-  @spec to_query(t) :: Query.t()
-  def to_query(union) do
-    union.children
-    |> Enum.map(fn e -> e.query.children end)
-    |> Enum.concat()
-    |> Query.new()
-  end
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(union) do
-      union.children
-      |> Enum.map(&@protocol.to_expr/1)
-      |> Enum.into(%{})
-    end
-
-    @impl @protocol
-    def get_key(_), do: nil
-  end
-
-  defmodule Entry do
-    @moduledoc false
-
-    defstruct key: nil,
-              query: nil
-
-    @type t :: %__MODULE__{
-            key: Prop.t(),
-            query: Query.t()
-          }
-
-    @spec new(Prop.t(), Query.t()) :: t
-    def new(key, query) do
-      %__MODULE__{
-        key: key,
-        query: query
-      }
-    end
-
-    defimpl EQL.AST do
-      @impl @protocol
-      def to_expr(entry) do
-        {@protocol.to_expr(entry.key), @protocol.to_expr(entry.query)}
-      end
-
-      @impl @protocol
-      def get_key(entry) do
-        @protocol.to_expr(entry.key)
-      end
-    end
-  end
-end
-
-defmodule EQL.AST.Params do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.AST.{Ident, Join, Prop}
-  alias EQL.Expression
-
-  defstruct params: %{},
-            expr: nil
-
-  @type t(x) :: %__MODULE__{
-          params: params,
-          expr: x
-        }
-  @type t :: t(Prop.t() | Ident.t() | Join.t())
-
-  @type expr(x) :: nonempty_improper_list(x, params)
-  @type expr :: expr(Prop.expr() | Ident.expr() | Join.expr())
-  @type params :: map
-
-  @spec new(Prop.t() | Ident.t() | Join.t(), params) :: t
-  def new(expr, params \\ %{}) do
-    %__MODULE__{
-      expr: expr,
-      params: params
-    }
-  end
-
-  defguard is_params(x) when is_list(x) and is_map(tl(x))
-
-  @impl EQL.Expression
-  def to_ast([expr | params] = x) when is_params(x) do
-    case Expression.to_ast([Prop, Ident, Join], expr) do
-      nil -> nil
-      expr -> new(expr, params)
-    end
-  end
-
-  def to_ast(_), do: nil
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(params) do
-      [@protocol.to_expr(params.expr) | params.params]
-    end
-
-    @impl @protocol
-    def get_key(params) do
-      @protocol.get_key(params.expr)
-    end
-  end
-end
-
-defmodule EQL.AST.Mutation do
-  @moduledoc false
-
-  @behaviour EQL.Expression
-
-  alias EQL.{AST.Query, Expression}
-
-  defstruct module: nil,
-            fun: nil,
-            args: []
-
-  @type t :: %__MODULE__{
-          module: module,
-          fun: atom,
-          args: [term]
-        }
-
-  @type expr :: call | %{required(call) => Query.expr()}
-  @type call :: {module, atom, args :: [term]}
-
-  @spec new(module, atom, [term]) :: t
-  def new(module, fun, args \\ []) do
-    %__MODULE__{
-      module: module,
-      fun: fun,
-      args: args
-    }
-  end
-
-  defguard is_mutation(x)
-           when is_tuple(x) and tuple_size(x) == 3 and
-                  is_atom(elem(x, 0)) and is_atom(elem(x, 1)) and is_list(elem(x, 2))
-
-  @impl Expression
-  def to_ast({module, fun, args} = mut) when is_mutation(mut) do
-    new(module, fun, args)
-  end
-
-  def to_ast(_), do: nil
-
-  defimpl EQL.AST do
-    @impl @protocol
-    def to_expr(mut) do
-      {mut.module, mut.fun, mut.args}
-    end
-
-    @impl @protocol
-    def get_key(mut) do
-      {mut.module, mut.fun}
-    end
-  end
 end
