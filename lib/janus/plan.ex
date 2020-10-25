@@ -19,9 +19,17 @@ defmodule Janus.Plan do
           optional(:input) => [Janus.attr()],
           optional(:output) => Janus.shape_descriptor()
         }
+  @type vertex :: [Vertex.t()] | Vertex.t() | nil
+  @type full_path :: {landmark, Graph.node_id(), Janus.attr(), scope}
 
   @root_start [:root | :start]
   @root_end [:root | :end]
+
+  @spec root_start() :: Vertex.id()
+  def root_start, do: @root_start
+
+  @spec root_end() :: Vertex.id()
+  def root_end, do: @root_end
 
   @spec init_graph(t) :: t
   def init_graph(graph) do
@@ -33,7 +41,6 @@ defmodule Janus.Plan do
   @spec create_attr_root_node(t, Janus.attr()) ::
           {:ok, {Vertex.id(), t}} | {:error, reason :: term}
   def create_attr_root_node(graph, attr) do
-    # TODO: update root_start attrs
     case lookup(graph, :or, [], attr) do
       nil ->
         {attr_root, graph} = create_node(graph, :or, [], attr, id: attr)
@@ -48,8 +55,6 @@ defmodule Janus.Plan do
     end
   end
 
-  # TODO: def connect_to_root_end(t, Vertex.id, Janus.attr) :: {:ok, {Edge.t(), t}} | {:error, reason :: term}
-
   @spec find_attr_resolvers(t, Janus.attr()) :: [Vertex.t()]
   def find_attr_resolvers(graph, attr) do
     graph
@@ -60,21 +65,11 @@ defmodule Janus.Plan do
     end)
   end
 
-  @spec follow(
-          t,
-          Vertex.t() | Vertex.id() | nil,
-          [{landmark, Graph.node_id(), Janus.attr(), scope}],
-          Janus.attr(),
-          keyword
-        ) :: {:ok, t} | {:error, reason :: term}
+  @spec follow(t, vertex, [full_path], Janus.attr(), keyword) ::
+          {:ok, t} | {:error, reason :: term}
   def follow(graph, current, path, attr, opts \\ [])
 
-  def follow(graph, nil, path, attr, opts) do
-    # TODO: eventually remove/modify these logs
-    _ = Logger.error(fn -> "#{Utils.inspect(graph)}" end)
-    _ = Logger.error(fn -> "#{Utils.inspect(path)}" end)
-    _ = Logger.error(fn -> "#{Utils.inspect(attr)}" end)
-    _ = Logger.error(fn -> "#{Utils.inspect(opts)}" end)
+  def follow(_graph, nil, _path, _attr, _opts) do
     {:error, :invalid_current}
   end
 
@@ -102,14 +97,7 @@ defmodule Janus.Plan do
     follow(graph, Digraph.vertex(graph, id), path, attr, opts)
   end
 
-  @spec follow_impl(
-          t,
-          Vertex.t(),
-          [Vertex.t()] | Vertex.t() | nil,
-          [{landmark, Graph.node_id(), Janus.attr(), scope}],
-          Janus.attr(),
-          keyword
-        ) ::
+  @spec follow_impl(t, Vertex.t(), vertex, [full_path], Janus.attr(), keyword) ::
           {:ok, t} | {:error, reason :: term}
   defp follow_impl(graph, current, [], path, attr, opts) do
     follow_impl(graph, current, nil, path, attr, opts)
@@ -121,62 +109,71 @@ defmodule Janus.Plan do
     |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
   end
 
-  # credo:disable-for-next-line Credo.Check.Refactor.CyclomaticComplexity
-  defp follow_impl(graph, current, next, [{l, i, o, s} | t] = p, attr, opts) do
+  defp follow_impl(graph, current, next, [{l, _, _, _} | t] = path, attr, opts) do
     if match_path_next?(next, l) do
       follow(graph, next, t, attr, opts)
     else
       case {current, next} do
         {_, %{label: %{resolver: _}}} ->
-          graph
-          |> inject_or_node(current, next)
-          |> Rails.bind(fn {oid, g} ->
-            locate_and_connect(g, oid, l, s, attr, push(opts, i, o))
-          end)
-          |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
+          inject_new_resolver(graph, current, next, path, attr, opts)
 
         {%{label: %{type: :and}}, branches} ->
-          case Enum.find(branches, &match?({%{label: %{scope: [b | _]}}, [b | _]}, {&1, s})) do
-            nil ->
-              graph
-              |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
-              |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
-
-            branch ->
-              if match_path_next?(branch, elem(hd(t), 0)) do
-                follow(graph, branch, t, attr, opts)
-              else
-                graph
-                |> inject_or_node(current, branch, s)
-                |> Rails.bind(fn {v, g} -> follow(g, v, p, attr, opts) end)
-              end
-          end
+          locate_and_branch(graph, current, branches, path, attr, opts)
 
         {%{label: %{type: :or}}, branches} ->
-          case Enum.find(branches, &match_path_next?(&1, l)) do
-            nil ->
-              graph
-              |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
-              |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
-
-            branch ->
-              follow(graph, branch, t, attr, opts)
-          end
+          locate_or_branch(graph, current, branches, path, attr, opts)
 
         {_, %{label: %{type: :or}}} ->
-          follow(graph, next, p, attr, opts)
+          follow(graph, next, path, attr, opts)
 
         _ ->
-          # TODO: eventually remove/modify these logs
-          # require IEx; IEx.pry()
-          _ = Logger.error(fn -> "graph: #{Utils.inspect(graph)}" end)
-          _ = Logger.error(fn -> "current: #{Utils.inspect(current)}" end)
-          _ = Logger.error(fn -> "next: #{Utils.inspect(next)}" end)
-          _ = Logger.error(fn -> "path: #{Utils.inspect(p)}" end)
-          _ = Logger.error(fn -> "attr: #{Utils.inspect(attr)}" end)
-          _ = Logger.error(fn -> "opts: #{Utils.inspect(opts)}" end)
           {:error, :unexpected_form}
       end
+    end
+  end
+
+  @spec inject_new_resolver(t, Vertex.t(), Vertex.t(), [full_path, ...], Janus.attr(), keyword) ::
+          {:ok, t} | {:error, reason :: term}
+  defp inject_new_resolver(graph, current, next, [{l, i, o, s} | t], attr, opts) do
+    graph
+    |> inject_or_node(current, next)
+    |> Rails.bind(fn {oid, g} ->
+      locate_and_connect(g, oid, l, s, attr, push(opts, i, o))
+    end)
+    |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
+  end
+
+  @spec locate_and_branch(t, Vertex.t(), vertex, [full_path, ...], Janus.attr(), keyword) ::
+          {:ok, t} | {:error, reason :: term}
+  defp locate_and_branch(graph, current, branches, [{l, i, o, s} | t] = p, attr, opts) do
+    case Enum.find(branches, &match?({%{label: %{scope: [b | _]}}, [b | _]}, {&1, s})) do
+      nil ->
+        graph
+        |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
+        |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
+
+      branch ->
+        if match_path_next?(branch, elem(hd(t), 0)) do
+          follow(graph, branch, t, attr, opts)
+        else
+          graph
+          |> inject_or_node(current, branch, s)
+          |> Rails.bind(fn {v, g} -> follow(g, v, p, attr, opts) end)
+        end
+    end
+  end
+
+  @spec locate_or_branch(t, Vertex.t(), vertex, [full_path, ...], Janus.attr(), keyword) ::
+          {:ok, t} | {:error, reason :: term}
+  defp locate_or_branch(graph, current, branches, [{l, i, o, s} | t], attr, opts) do
+    case Enum.find(branches, &match_path_next?(&1, l)) do
+      nil ->
+        graph
+        |> locate_and_connect(current.id, l, s, attr, push(opts, i, o))
+        |> Rails.bind(fn {v, g} -> follow(g, v, t, attr, opts) end)
+
+      branch ->
+        follow(graph, branch, t, attr, opts)
     end
   end
 

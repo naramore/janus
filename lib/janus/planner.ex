@@ -42,97 +42,25 @@ defmodule Janus.Planner do
     Map.pop(planner, key)
   end
 
-  @spec backtrack_and_mark(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
-  def backtrack_and_mark(planner, attr, vertices) do
-    case backtrack(planner, attr, vertices) do
+  @impl Graph
+  def ast_walker(:pre_walk, %Prop{} = prop, graph, %{plan: plan} = planner) do
+    with attr when not is_nil(attr) <- EQL.get_key(prop),
+         {attr, [_ | _] = vs} <- {attr, Plan.find_attr_resolvers(plan, attr)},
+         {:ok, {_, plan}} <- Plan.create_attr_root_node(plan, attr),
+         {:ok, planner} <- backtrack_and_mark(%{planner | plan: plan}, attr, vs) do
+      {:skip, graph, planner}
+    else
       {:error, reason} ->
         {:error, reason}
 
-      {:ok, planner} ->
-        Enum.reduce(vertices, {:ok, planner}, fn
-          _, {:error, reason} ->
-            {:error, reason}
-
-          v, {:ok, p} ->
-            update_in(
-              p,
-              [:plan, :vertices, v.id, :label, :output],
-              &Utils.deep_merge(&1, %{attr => %{}})
-            )
-            |> (&Plan.connect(&1.plan, v.id, [:root | :end])).()
-            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-            |> case do
-              {:error, reason} -> {:error, reason}
-              {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
-            end
-        end)
-    end
-  end
-
-  @spec backtrack(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
-  def backtrack(planner, attr, vertices) do
-    Enum.reduce(vertices, {:ok, planner}, fn
-      _, {:error, reason} ->
-        {:error, reason}
-
-      v, {:ok, p} ->
-        planner =
-          update_in(p, [:plan, :vertices, v.id, :label, :attrs], fn
-            nil ->
-              [attr]
-
-            attrs ->
-              if attr in attrs do
-                attrs
-              else
-                [attr | attrs]
-              end
-          end)
-
-        planner.plan
-        |> Digraph.in_neighbours(v.id)
-        |> Enum.filter(&match?(%{id: [:"$v" | _]}, &1))
-        |> case do
-          [] ->
-            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-            case Plan.connect(planner.plan, attr, v.id) do
-              {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
-              {:error, reason} -> {:error, reason}
-            end
-
-          next ->
-            backtrack(planner, attr, next)
-        end
-    end)
-  end
-
-  @impl Graph
-  def ast_walker(:pre_walk, %Prop{} = prop, graph, planner) do
-    # TODO: root_start and root_end need their attrs updated
-    # TODO: fix this to look for available attrs as well and NOT backtrack in those situations
-    # TODO: refactor -> with
-    case EQL.get_key(prop) do
       nil ->
         {:error, {:invalid_prop, prop}}
 
-      attr ->
-        case Plan.find_attr_resolvers(planner.plan, attr) do
-          [] ->
-            {:cont, graph, reset(planner, attr)}
-
-          vertices ->
-            # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-            case Plan.create_attr_root_node(planner.plan, attr) do
-              {:error, reason} ->
-                {:error, reason}
-
-              {:ok, {_, plan}} ->
-                # credo:disable-for-next-line Credo.Check.Refactor.Nesting
-                case backtrack_and_mark(%{planner | plan: plan}, attr, vertices) do
-                  {:error, reason} -> {:error, reason}
-                  {:ok, planner} -> {:skip, graph, planner}
-                end
-            end
+      {attr, []} ->
+        if attr in Map.keys(planner.available_data) do
+          {:skip, graph, planner}
+        else
+          {:cont, graph, reset(planner, attr)}
         end
     end
   end
@@ -322,6 +250,88 @@ defmodule Janus.Planner do
     |> Enum.map(fn
       {{:join, _} = j, i, o, [_ | s]} -> {j, i, o, s}
       x -> x
+    end)
+  end
+
+  @spec backtrack_and_mark(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
+  defp backtrack_and_mark(planner, attr, vertices) do
+    case backtrack(planner, attr, vertices) do
+      {:error, reason} ->
+        {:error, reason}
+
+      {:ok, planner} ->
+        Enum.reduce(vertices, {:ok, planner}, &backtrack_and_marker(&1, &2, attr))
+    end
+  end
+
+  @spec backtrack_and_marker(Vertex.t(), acc, Janus.attr()) :: acc
+        when acc: {:ok, t} | {:error, reason :: term}
+  defp backtrack_and_marker(vertex, planner_result, attr)
+  defp backtrack_and_marker(_, {:error, reason}, _), do: {:error, reason}
+
+  defp backtrack_and_marker(vertex, {:ok, planner}, attr) do
+    planner
+    |> update_output(vertex.id, attr)
+    |> connect_to_root_end(vertex.id)
+  end
+
+  @spec update_output(t, Vertex.id(), Janus.attr()) :: t
+  defp update_output(planner, vertex_id, attr) do
+    update_in(
+      planner,
+      [:plan, :vertices, vertex_id, :label, :output],
+      &Utils.deep_merge(&1, %{attr => %{}})
+    )
+  end
+
+  @spec connect_to_root_end(t, Vertex.id()) :: {:ok, t} | {:error, reason :: term}
+  defp connect_to_root_end(planner, vertex_id) do
+    case Plan.connect(planner.plan, vertex_id, Plan.root_end()) do
+      {:error, reason} -> {:error, reason}
+      {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
+    end
+  end
+
+  @spec backtrack(t, Janus.attr(), [Vertex.t()]) :: {:ok, t} | {:error, reason :: term}
+  defp backtrack(planner, attr, vertices) do
+    Enum.reduce(vertices, {:ok, planner}, &backtracker(&1, &2, attr))
+  end
+
+  @spec backtracker(Vertex.t(), acc, Janus.attr()) :: acc
+        when acc: {:ok, t} | {:error, reason :: term}
+  defp backtracker(vertex, planner_result, attr)
+  defp backtracker(_, {:error, reason}, _), do: {:error, reason}
+
+  defp backtracker(vertex, {:ok, planner}, attr) do
+    planner = update_attrs(planner, vertex.id, attr)
+
+    planner.plan
+    |> Digraph.in_neighbours(vertex.id)
+    |> Enum.filter(&match?(%{id: [:"$v" | _]}, &1))
+    |> case do
+      [] ->
+        case Plan.connect(planner.plan, attr, vertex.id) do
+          {:ok, {_, plan}} -> {:ok, %{planner | plan: plan}}
+          {:error, reason} -> {:error, reason}
+        end
+
+      next ->
+        backtrack(planner, attr, next)
+    end
+  end
+
+  @spec update_attrs(t, Vertex.id(), Janus.attr()) :: t
+  defp update_attrs(planner, vertex_id, attr) do
+    update_in(planner, [:plan, :vertices, vertex_id, :label, :attrs], fn
+      nil ->
+        [attr]
+
+      attrs ->
+        if attr in attrs do
+          attrs
+        else
+          [attr | attrs]
+        end
     end)
   end
 end

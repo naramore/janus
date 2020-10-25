@@ -3,6 +3,7 @@ defmodule JanusExamples do
   use Boundary, check: [in: true, out: false]
   alias Janus.{Planner, Resolver}
 
+  # {:ok, {g, a}} = JanusExamples.test_ast()
   def test_ast do
     planner =
       Planner.new([
@@ -26,6 +27,7 @@ defmodule JanusExamples do
     |> Planner.walk_ast(ast, planner)
   end
 
+  # {_, g, a} = JanusExamples.test_attr()
   def test_attr do
     planner = Planner.new(complex_source())
 
