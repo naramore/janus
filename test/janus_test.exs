@@ -34,10 +34,10 @@ defmodule Janus.ResolverTest do
   doctest Janus.Resolver
 end
 
-defmodule Janus.RunnerTest do
+defmodule Janus.ProcessorTest do
   use ExUnit.Case
   use ExUnitProperties
-  doctest Janus.Runner
+  doctest Janus.Processor
 end
 
 defmodule Janus.UtilsTest do

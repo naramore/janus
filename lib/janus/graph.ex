@@ -17,6 +17,9 @@ defmodule Janus.Graph do
 
   @behaviour Access
 
+  # TODO: add checks to Janus.Graph.from_resolvers/1 for resolver uniqueness
+  # TODO: add resolver function to nodes? (or just keep the resolver index on the graph?)
+
   defstruct unreachable: MapSet.new([]),
             attr_trail: [],
             dg: nil
@@ -310,6 +313,7 @@ defmodule Janus.Graph do
   end
 
   @spec extract_input_name(Resolver.t()) :: id | [id] when id: {module, atom}
+  defp extract_input_name(%Resolver{input: []}), do: []
   defp extract_input_name(%Resolver{input: [id]}), do: id
   defp extract_input_name(%Resolver{input: [_ | _] = ids}), do: ids
 

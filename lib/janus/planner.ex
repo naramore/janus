@@ -1,5 +1,16 @@
 defmodule Janus.Planner do
-  @moduledoc false
+  @moduledoc """
+  Core logic for resolver path accumulation.
+
+  Responsible for interfacing with `Janus.Graph` via its `ast_walker/4` and
+  `attr_walker/4` callbacks and constructing the paths needed by
+  `Janus.Plan` to create the run graph to be used by `Janus.Processor`.
+
+  The basic logic of `attr_walker/4` is to accumulate the path/trail if the
+  'end' hasn't been found yet, but if the 'end' has been found then add that
+  path to the struct and update the `Digraph` `:plan` via
+  `Janus.Plan.follow/5`.
+  """
 
   use Janus.Graph
   alias Digraph.Vertex
@@ -8,6 +19,8 @@ defmodule Janus.Planner do
   require Logger
 
   @behaviour Access
+
+  # TODO: eventually remove paths?
 
   defstruct available_data: %{},
             resolver_trail: [],

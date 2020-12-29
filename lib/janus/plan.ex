@@ -1,5 +1,58 @@
 defmodule Janus.Plan do
-  @moduledoc false
+  @moduledoc """
+  Core logic for the plan / run graph construction.
+
+  There are 4 different node types in the run graph:
+  - resolver-nodes: represents a `Janus.Resolver` to be executed
+  - or-nodes: represents a set of paths of which at least ONE must be traversed
+  - and-nodes: represents a set of paths that ALL must be traversed
+  - join-nodes: used with and-nodes as the 'end' of the and-branches
+
+  The primary entrypoint is `follow/5` which takes a 'path' and the current run
+  graph, and walks the path either verifying that the correct node next in the
+  path exists, otherwise creating it.
+
+  ## Run Graph Construction Pseudo-Code
+
+  - if the next node is `nil` or `[]`:
+    - locate existing node / create new node
+    - follow
+  - if the next node matches the next node in the path:
+    - follow the path
+  - if the next node is a resolver node:
+    - inject an or-node b/t current and next node
+    - locate existing resolver / create new resolver
+    - follow
+  - if the current node is an and-node:
+    - look through the and-node branches for the specific logical branch:
+      - if found and matches the next node in the path:
+        - follow
+      - if found (no match):
+        - inject an or-node at path root
+        - follow
+      - otherwise:
+        - locate existing node / create new node
+        - follow
+  - if the current node is an or-node:
+    - look through the or-node branches for a match with next node in path:
+      - if found:
+        - follow
+      - otherwise:
+        - locate existing node / create new node
+        - follow
+  - if the next node is an or-node:
+    - continue to follow
+
+  ## Notes
+
+  The main reason `Digraph` exists is that since this functionality is intended
+  to be run within the resolution of a client request-response cycle on a
+  webserver, the 'overhead' of using `:digraph`, which is `:ets`-based could
+  potentially have concurrency / ETS table implications at extreme concurrency.
+  (not sure how legitimate this concern is, but if it turns out to be unfounded,
+  replacing `Digraph` with `:digraph` would only be a moderate refactor of this
+  module and `Janus.Planner`)
+  """
 
   alias Digraph.{Edge, Vertex}
   alias Janus.{Graph, Resolver, Utils}
@@ -7,7 +60,10 @@ defmodule Janus.Plan do
 
   @type t :: Digraph.t()
   @type path :: [landmark]
-  @type landmark :: Resolver.id() | {:and, [Janus.attr()], Janus.attr()} | {:join, [Janus.attr()]}
+  @type resolver_node :: Resolver.id()
+  @type and_node :: {:and, all_branches :: [Janus.attr()], this_branch :: Janus.attr()}
+  @type join_node :: {:join, all_branches :: [Janus.attr()]}
+  @type landmark :: resolver_node | and_node | join_node
   @type scope :: [Janus.attr() | {:and, [Janus.attr()]}]
   @type type :: :resolver | :and | :or | :join
   @type node_label :: %{

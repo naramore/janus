@@ -1,6 +1,24 @@
 defmodule Janus.Resolver do
   @moduledoc false
 
+  # TODO: batching (implemented using a more generic transform middleware / interceptor model?)
+  #                (or maybe, default to batching? and have single requests be a corner case?)
+  # TODO: add params to resolver? (if a resolver can specified required params,
+  #                                then this would potentially change planning)
+  # TODO: async (perhaps supports the return of a Task.t or [Task.t], or something similar?)
+  # TODO: defresolver macro
+  # TODO: resolver helpers
+  #         - alias_resolver
+  #         - equivalence_resolver
+  #         - constantly_resolver
+  #         - single_attr_resolver
+  #         - single_attr_with_env_resolver
+  #         - static_table_resolver
+  #         - attribute_map_resolver
+  #         - attribute_table_resolver
+  # TODO: file resolver?
+  # TODO: `:ets` resolver?
+
   defstruct id: nil,
             input: [],
             output: [],

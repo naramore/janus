@@ -5,12 +5,13 @@ env:
 jobs:
   static:
     runs-on: ubuntu-latest
+    name: Test Erlang/OTP ${{ matrix.otp }} & Elixir ${{ matrix.elixir }}
     steps:
       - uses: actions/checkout@v2
       - uses: actions/setup-elixir@v1
         with:
-          otp-version: 23.1
-          elixir-version: 1.10.4
+          otp-version: 23.2.1
+          elixir-version: 1.11.2
       - uses: actions/cache@v2
         with:
           path: |

@@ -28,12 +28,55 @@ Janus is basically Pathom in Elixir. See the following for more details:
 - [Extensible Data Notation (EDN)](https://github.com/edn-format/edn)
 - [Tranist](https://github.com/cognitect/transit-cljs)
 
+## Musings
+
+Should properties emulate the Pathom form or follow a more idiomatically
+Erlang/Elixir form?
+
+  ```elixir
+  # more like Pathom/EQL
+  prop = :"foo.bar/baz"
+  
+  # more Elixir/Erlang-y?
+  prop = {Foo.Bar, :baz}
+  ```
+  
+The former looks less like Elixir, but using 2-tuples as map keys doesn't
+look super Elixir-y either...
+
+  ```elixir
+  # more like Pathom/EQL
+  map = %{"foo.bar/baz": :test}
+  
+  # more Elixir/Erlang-y???
+  map = %{{Foo.Bar, :baz} => :test}
+  ```
+  
+I (personally) don't find either of these options truly satifying...
+
+Maybe create a Map-like substitute struct that behaves like a map, but
+presents itself differently to seem more idiomatic?
+
+> As an aside, I understand that Clojure (and I would assumes Lisps in general)
+> are built intentionally with this type of thing in mind, while Erlang
+> and Elixir were not, hence the friction. I still find the core idea of
+> namespaced attributes + resolvers compelling enough to attempt in this
+> (amazing) language regardless.
+
+At the moment, I think I still prefer the 2-tuple option for Elixir (although
+I'm open to being persuaded on this point). 
+
+Or maybe use a more struct-based approach for query expression, rather than the
+data-oriented apporoach that Clojure's EDN and EQL uses? Which would potentially
+avoid this entire issue? I'm a huge fan of the whole query-as-data premise though
+because it allows for 'straight-forward' query manipulation using existing core
+functions.
+
 ## Roadmap
 
 - support subqueries (i.e. ident + join + recursion)
 - `Janus.Runner` + `Janus.Resolver` (i.e. batching, async, transforming, etc.)
 - weight alorithm behaviour (i.e. OR branches) for `Janus.Runner`
-- `Janus` API (i.e. process/parse, index)
 - `Janus.Plugin` (e.g. middleware, interceptor, behaviour, walker / planner / runner lifecycle hooks)
   - `:telemetry`
   - error handling
@@ -41,6 +84,7 @@ Janus is basically Pathom in Elixir. See the following for more details:
   - placeholders
   - caching: request, query, plan, resolver
   - complexity analysis (see https://hexdocs.pm/absinthe/complexity-analysis.html#content)
+- `Janus` API (i.e. process/parse, index)
 - index 
 - docs and typespecs for attributes (docs for resolvers?)
 - mutation
@@ -48,12 +92,8 @@ Janus is basically Pathom in Elixir. See the following for more details:
 - export, defer, live, stream
 - dynamic resolvers / GraphQL integration
 - `Inspect`
-
-### Misc
-
-- support alternative property expressions (e.g. formatted atoms, strings)
-- add checks to Janus.Graph.from_resolvers/1 for resolver uniqueness
-- EQL + Janus.Plugin -> add variables? (i.e. pattern matching some/all of a query, and able to 'use' that within subsequent parts of the query)
+- Error Struct(s) instead of `{:error, reason :: term}`
+- resolver diplomats for `Tesla`, `Ecto`, `:ets`
 
 ## Related Next-Steps
 

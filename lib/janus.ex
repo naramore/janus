@@ -92,4 +92,6 @@ defmodule Janus do
   @type attr :: EQL.AST.Prop.expr()
   @type shape_descriptor(x) :: %{optional(x) => shape_descriptor(x)}
   @type shape_descriptor :: shape_descriptor(attr)
+  @type response_form(x) :: %{optional(x) => [response_form(x)] | any}
+  @type response_form :: response_form(attr)
 end
